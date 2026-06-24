@@ -30,18 +30,18 @@ ss = open_spreadsheet()
 
 # ══ الأوراق — كلها AMZ_ عشان متتخلطش مع نون ══
 TABS_CONFIG = {
-    "AMZ_Requests":    ["ASIN","FNSKU","MSKU","Quantity","Image URL","Date Added","File Name"],
-    "AMZ_Approved":    ["ASIN","FNSKU","MSKU","Qty Requested","Qty Approved","Image URL","Date Added","Date Approved"],
-    "AMZ_Unavailable": ["ASIN","FNSKU","MSKU","Quantity","Image URL","Date Added","Date Marked Unavailable"],
-    "AMZ_Ordered":     ["ASIN","FNSKU","MSKU","Quantity","Image URL","Date Added","Order Count","Notes"],
-    "AMZ_Scheduled":   ["ASN","ASIN","FNSKU","MSKU","Quantity","Schedule Date","Image URL","Date Added","Notes","Flag"],
-    "AMZ_Cancelled":   ["ASN","ASIN","FNSKU","MSKU","Quantity","Schedule Date","Image URL","Date Added","Cancel Reason","Date Cancelled"],
-    "AMZ_Rescheduled": ["ASN","ASIN","FNSKU","MSKU","Quantity","Old Schedule Date","Image URL","Date Added","Reschedule Reason","Date Moved"],
-    "AMZ_Expired":     ["ASN","ASIN","FNSKU","MSKU","Quantity","Schedule Date","Image URL","Date Added","Date Expired"],
-    "AMZ_Check":       ["ASN","ASIN","FNSKU","MSKU","Quantity","Schedule Date","Image URL","Date Added","Notes","Flag"],
-    "AMZ_CancelNotif": ["ASN","ASINs","Schedule Date","Reason","Timestamp"],
+    "AMZ_Requests":    ["MSKU","ASIN","FNSKU","Quantity","Image URL","Date Added","File Name"],
+    "AMZ_Approved":    ["MSKU","ASIN","FNSKU","Qty Requested","Qty Approved","Image URL","Date Added","Date Approved"],
+    "AMZ_Unavailable": ["MSKU","ASIN","FNSKU","Quantity","Image URL","Date Added","Date Marked Unavailable"],
+    "AMZ_Ordered":     ["MSKU","ASIN","FNSKU","Quantity","Image URL","Date Added","Order Count","Notes"],
+    "AMZ_Scheduled":   ["ASN","MSKU","ASIN","FNSKU","Quantity","Schedule Date","Image URL","Date Added","Notes","Flag"],
+    "AMZ_Cancelled":   ["ASN","MSKU","ASIN","FNSKU","Quantity","Schedule Date","Image URL","Date Added","Cancel Reason","Date Cancelled"],
+    "AMZ_Rescheduled": ["ASN","MSKU","ASIN","FNSKU","Quantity","Old Schedule Date","Image URL","Date Added","Reschedule Reason","Date Moved"],
+    "AMZ_Expired":     ["ASN","MSKU","ASIN","FNSKU","Quantity","Schedule Date","Image URL","Date Added","Date Expired"],
+    "AMZ_Check":       ["ASN","MSKU","ASIN","FNSKU","Quantity","Schedule Date","Image URL","Date Added","Notes","Flag"],
+    "AMZ_CancelNotif": ["ASN","MSKUs","Schedule Date","Reason","Timestamp"],
     "AMZ_Inventory":   ["ASIN","FNSKU","MSKU","Warehouse","Condition","Stock","Image URL","Date Uploaded"],
-    "AMZ_Sales":       ["ASIN","FNSKU","MSKU","Title","Event Type","Fulfillment Center","Quantity","Date","Date Uploaded"],
+    "AMZ_Sales":       ["MSKU","ASIN","FNSKU","Title","Event Type","Fulfillment Center","Quantity","Date","Date Uploaded"],
     "AMZ_Settings":    ["Key","Value"],
 }
 
@@ -78,7 +78,7 @@ sheets = {}
 for tab, headers in TABS_CONFIG.items():
     sheets[tab] = get_or_create_worksheet(tab, headers)
 
-# صفحة الصور — links m (مرتبطة بـ MSKU — خاصة بأمازون)
+# صفحة الصور — links a (خاصة بأمازون)
 def get_or_create_links_ws(retries=5, delay=2):
     for attempt in range(retries):
         try:
@@ -154,7 +154,7 @@ def get_excluded_warehouses():
 # ══ links map ══
 @st.cache_data(ttl=300)
 def get_links_map():
-    """ترجع map من MSKU → Image URL (مبنية على صفحة links m)"""
+    """ترجع dict: MSKU.upper() → Image URL (من صفحة links m)"""
     data = links_ws.get_all_values()
     m = {}
     for row in data[1:]:
@@ -304,21 +304,23 @@ def safe_update_row(sheet, row_idx, values, retries=4, delay=1):
             time.sleep(delay)
     return False
 
-def merge_or_get_existing_row(sheet, asin):
+def merge_or_get_existing_row(sheet, msku):
+    """يبحث عن صف بـ MSKU (العمود الأول) في الشيت."""
     data = get_cached(sheet, force=True)
-    asin_up = asin.strip().upper()
+    msku_up = msku.strip().upper()
     if len(data) > 1:
         for ri, row in enumerate(data[1:], start=2):
-            if row and row[0].strip().upper() == asin_up:
+            if row and row[0].strip().upper() == msku_up:
                 return ri, row
     return None, None
 
-# ══ inv_map — المفتاح الأساسي هو MSKU ══
+# ══ inv_map — المفتاح الأساسي MSKU ══
 def build_inv_map(excluded_wh: set):
     inv_data = get_cached(inventory_sheet)
     inv_map = {}
     if len(inv_data) <= 1:
         return inv_map
+    # AMZ_Inventory cols: ASIN(0), FNSKU(1), MSKU(2), Warehouse(3), Condition(4), Stock(5), Image URL(6), Date Uploaded(7)
     for r in inv_data[1:]:
         while len(r) < 8: r.append("")
         asin, fnsku, msku, wh, condition, stock_raw, img, date_up = \
@@ -346,19 +348,16 @@ def build_inv_map(excluded_wh: set):
 
 # ══ sales maps — المفتاح MSKU ══
 def build_sales_map_monthly():
-    """مبيعات آخر 30 يوم — Event Type Shipments وQty سالب — مُفهرسة بـ MSKU."""
+    """مبيعات آخر 30 يوم — Event Type Shipments وQty سالب — مفهرسة بـ MSKU."""
     data = get_cached(sales_sheet)
     counts = {}
     if len(data) <= 1:
         return counts
     cutoff = datetime.now() - timedelta(days=30)
+    # AMZ_Sales cols: MSKU(0), ASIN(1), FNSKU(2), Title(3), Event Type(4), Fulfillment Center(5), Quantity(6), Date(7), Date Uploaded(8)
     for row in data[1:]:
         while len(row) < 8: row.append("")
-        # AMZ_Sales: ASIN,FNSKU,MSKU,Title,Event Type,Fulfillment Center,Quantity,Date,Date Uploaded
-        msku       = row[2].strip()
-        event_type = row[4].strip()
-        qty_raw    = row[6]
-        date_str   = row[7]
+        msku, event_type, qty_raw, date_str = row[0], row[4], row[6], row[7]
         if event_type.strip().lower() not in ("shipments", "shipment"):
             continue
         qty = _to_int(qty_raw)
@@ -366,13 +365,13 @@ def build_sales_map_monthly():
             continue
         d = parse_excel_date(date_str)
         if d and d >= cutoff:
-            msku_up = msku.upper()
+            msku_up = msku.strip().upper()
             if msku_up:
                 counts[msku_up] = counts.get(msku_up, 0) + abs(qty)
     return counts
 
 def build_daily_sales_counts(dates):
-    """مبيعات يومية — مُفهرسة بـ MSKU."""
+    """مبيعات يومية مفصّلة — مفهرسة بـ MSKU."""
     data = get_cached(sales_sheet)
     dates_set = set(dates)
     counts = {}
@@ -380,10 +379,7 @@ def build_daily_sales_counts(dates):
         return counts
     for row in data[1:]:
         while len(row) < 8: row.append("")
-        msku       = row[2].strip()
-        event_type = row[4].strip()
-        qty_raw    = row[6]
-        date_str   = row[7]
+        msku, event_type, qty_raw, date_str = row[0], row[4], row[6], row[7]
         if event_type.strip().lower() not in ("shipments", "shipment"):
             continue
         qty = _to_int(qty_raw)
@@ -391,7 +387,7 @@ def build_daily_sales_counts(dates):
             continue
         d = parse_excel_date(date_str)
         if d and d.date() in dates_set:
-            msku_up = msku.upper()
+            msku_up = msku.strip().upper()
             if msku_up:
                 if msku_up not in counts:
                     counts[msku_up] = {dd: 0 for dd in dates}
@@ -399,7 +395,6 @@ def build_daily_sales_counts(dates):
     return counts
 
 def compute_missing_inventory_rows(display_dates):
-    """MSKUs موجودة في المبيعات بس مش موجودة في inv_map (مخزون خلص)."""
     multi_counts = build_daily_sales_counts(display_dates)
     lm = get_links_map()
     rows = []
@@ -429,7 +424,7 @@ def load_cancel_notifications():
         return notifs
     for i, row in enumerate(data[1:], start=2):
         while len(row) < 5: row.append("")
-        asn, asins_str, sdate, reason, ts = row[0], row[1], row[2], row[3], row[4]
+        asn, mskus_str, sdate, reason, ts = row[0], row[1], row[2], row[3], row[4]
         if not asn.strip():
             continue
         pd_ = parse_excel_date(sdate)
@@ -438,7 +433,7 @@ def load_cancel_notifications():
             continue
         notifs.append({
             "asn":    asn.strip(),
-            "asins":  [s.strip() for s in asins_str.split("|") if s.strip()],
+            "mskus":  [s.strip() for s in mskus_str.split("|") if s.strip()],
             "sdate":  sdate.strip(),
             "reason": reason.strip(),
             "ts":     ts.strip(),
@@ -520,8 +515,8 @@ elif "amz_cancel_notifs" not in st.session_state:
 excluded_wh   = get_excluded_warehouses()
 inv_map       = build_inv_map(excluded_wh)
 sales_monthly = build_sales_map_monthly()
-for asin_up in inv_map:
-    inv_map[asin_up]["sales"] = sales_monthly.get(asin_up, 0)
+for msku_up in inv_map:
+    inv_map[msku_up]["sales"] = sales_monthly.get(msku_up, 0)
 
 # ══ UI helpers ══
 def show_img(img, width=75):
@@ -558,17 +553,9 @@ def show_sku_info(msku: str):
         badges.append(f'<span class="wh-badge" style="background:{bg};color:{color};{strike}">{wh}({cond[:4]}): {stk}</span>')
     st.markdown("🏭 " + "".join(badges), unsafe_allow_html=True)
 
-# دالة backward-compat — لو في أي مكان بيستدعي show_asin_info بـ ASIN، نحوّل لـ MSKU
-def show_asin_info(asin: str):
-    """Backward compat: يبحث عن MSKU المقابل لـ ASIN ثم يعرض المعلومات."""
-    asin_up = asin.strip().upper()
-    # ابحث عن MSKU من inv_map
-    for msku_key, info in inv_map.items():
-        if info.get("asin", "").upper() == asin_up:
-            show_sku_info(msku_key)
-            return
-    # لو ما لقيناش، جرب تعامله كـ MSKU مباشرة
-    show_sku_info(asin)
+# Alias backward compat
+def show_asin_info(msku: str):
+    show_sku_info(msku)
 
 def confirm_clear(key, sheet, label=""):
     if st.session_state.get(f"amz_confirm_{key}"):
@@ -583,8 +570,9 @@ def confirm_clear(key, sheet, label=""):
             st.session_state[f"amz_confirm_{key}"] = False
             st.rerun()
 
-def get_latest_schedule_info(asin):
-    asin_up = asin.strip().upper()
+def get_latest_schedule_info(msku):
+    """يجيب أقرب جدولة لـ MSKU (col[1]) من Scheduled أو Check."""
+    msku_up = msku.strip().upper()
     candidates = []
     for sheet_key in ("AMZ_Scheduled", "AMZ_Check"):
         data = get_cached(sheets[sheet_key])
@@ -592,7 +580,7 @@ def get_latest_schedule_info(asin):
             continue
         for row in data[1:]:
             while len(row) < 6: row.append("")
-            if row[1].strip().upper() == asin_up:
+            if row[1].strip().upper() == msku_up:
                 d = parse_excel_date(row[5])
                 candidates.append({"asn": row[0], "date": row[5], "qty": row[4], "parsed": d, "source": sheet_key})
     if not candidates:
@@ -603,8 +591,8 @@ def get_latest_schedule_info(asin):
         return dated[0]
     return candidates[0]
 
-def schedule_coverage_badge(asin, days_to_stockout, delay_days):
-    sched = get_latest_schedule_info(asin)
+def schedule_coverage_badge(msku, days_to_stockout, delay_days):
+    sched = get_latest_schedule_info(msku)
     if not sched:
         return ("🔴 محتاج جدولة الآن | Needs scheduling now", "#ef4444", None)
     if not sched["parsed"]:
@@ -617,13 +605,13 @@ def schedule_coverage_badge(asin, days_to_stockout, delay_days):
     else:
         return (f"🔴 مجدول (ASN {sched['asn']}) بتاريخ {sched['date']} [{src_label}] — متأخر عن موعد النفاد", "#ef4444", sched)
 
-def get_unavailable_ordered_note(asin):
-    asin_up = asin.strip().upper()
+def get_unavailable_ordered_note(msku):
+    msku_up = msku.strip().upper()
     notes = []
     data_un = get_cached(unavailable_sheet)
     if len(data_un) > 1:
         for row in data_un[1:]:
-            if row and row[0].strip().upper() == asin_up:
+            if row and row[0].strip().upper() == msku_up:
                 while len(row) < 7: row.append("")
                 cnt, dates = parse_count_dates(row[6])
                 notes.append(f"❌ غير متوفر سابقاً | Was unavailable ({cnt}x) — {dates}")
@@ -631,23 +619,24 @@ def get_unavailable_ordered_note(asin):
     data_ord = get_cached(ordered_sheet)
     if len(data_ord) > 1:
         for row in data_ord[1:]:
-            if row and row[0].strip().upper() == asin_up:
+            if row and row[0].strip().upper() == msku_up:
                 while len(row) < 8: row.append("")
                 cnt, dates = parse_count_dates(row[7])
                 notes.append(f"🛒 تم طلبه سابقاً | Was ordered ({cnt}x) — {dates}")
                 break
     return notes
 
-def get_recent_expired_info(asin, days_back=4):
-    asin_up = asin.strip().upper()
+def get_recent_expired_info(msku, days_back=4):
+    msku_up = msku.strip().upper()
     data = get_cached(expired_sheet)
     if len(data) <= 1:
         return None
     cutoff = datetime.now().date() - timedelta(days=days_back)
     candidates = []
+    # AMZ_Expired: ASN(0), MSKU(1), ASIN(2), FNSKU(3), ...
     for row in data[1:]:
         while len(row) < 10: row.append("")
-        if row[1].strip().upper() != asin_up:
+        if row[1].strip().upper() != msku_up:
             continue
         d_exp = parse_excel_date(row[9])
         if d_exp and d_exp.date() >= cutoff:
@@ -657,8 +646,8 @@ def get_recent_expired_info(asin, days_back=4):
     candidates.sort(key=lambda c: c["parsed_expired"], reverse=True)
     return candidates[0]
 
-def render_recent_expired_note(asin, days_back=4):
-    info = get_recent_expired_info(asin, days_back)
+def render_recent_expired_note(msku, days_back=4):
+    info = get_recent_expired_info(msku, days_back)
     if not info:
         return
     st.markdown(
@@ -683,7 +672,7 @@ def render_sidebar_notifications():
         st.markdown("---")
         lm = get_links_map()
         for ni, notif in enumerate(notifs):
-            asns  = notif.get("asins", [])
+            asns  = notif.get("mskus", [])
             chips = "".join(f'<span class="asin-chip">{a[:12]}</span>' for a in asns[:5])
             if len(asns) > 5:
                 chips += f'<span class="asin-chip">+{len(asns)-5}</span>'
@@ -728,21 +717,21 @@ def compute_transferred_from_sales():
     dates_now  = [today_now - timedelta(days=i) for i in range(1, sales_days + 1)]
     counts_now = build_daily_sales_counts(dates_now)
     result = []
-    for asin_up, info in inv_map.items():
+    for msku_up, info in inv_map.items():
         stock      = info.get("total_stock", 0)
         sales_m    = info.get("sales", 0)
-        day_counts = counts_now.get(asin_up, {d: 0 for d in dates_now})
+        day_counts = counts_now.get(msku_up, {d: 0 for d in dates_now})
         total_rec  = sum(day_counts.values())
         avg_daily  = (total_rec / sales_days) if sales_days > 0 else (sales_m / 30 if sales_m > 0 else 0)
         eff_avg    = avg_daily if avg_daily > 0 else (sales_m / 30 if sales_m > 0 else 0)
         days_so    = round(stock / eff_avg) if eff_avg > 0 else 9999
         if days_so >= cov_days and eff_avg > 0:
             continue
-        badge_text, _, sched = schedule_coverage_badge(info["asin"], days_so, delay_days)
-        un_notes = get_unavailable_ordered_note(info["asin"])
+        badge_text, _, sched = schedule_coverage_badge(info["msku"], days_so, delay_days)
+        un_notes = get_unavailable_ordered_note(info["msku"])
         if "محتاج جدولة" in badge_text and not sched and not un_notes:
             result.append({
-                "asin": info["asin"], "asin_up": asin_up,
+                "msku": info["msku"], "msku_up": msku_up,
                 "stock": stock, "sales_month": sales_m, "img": info["img"],
                 "effective_avg": eff_avg, "days_to_stockout": days_so,
                 "day_counts": day_counts,
@@ -783,7 +772,7 @@ with tab1:
     col_m, col_t = st.columns([3,1])
     with col_t:
         st.download_button("⬇️ Template فارغ | Empty Template",
-            data=make_empty_template(["ASIN","FNSKU","MSKU","Quantity"]),
+            data=make_empty_template(["MSKU","ASIN","FNSKU","Quantity"]),
             file_name=f"amz_request_template_{file_timestamp()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True)
@@ -805,11 +794,11 @@ with tab1:
                     if cl in ("fnsku","fulfillment-channel-sku"): fnsku_col=c
                     if cl in ("msku","seller-sku"): msku_col=c
                     if cl in ("quantity","qty","كمية"): qty_col=c
-                if not asin_col: asin_col=df_up.columns[0]
+                if not msku_col: msku_col=df_up.columns[0]
                 st.info(f"📊 {len(df_up)} صف | rows")
                 st.dataframe(df_up.head(10),use_container_width=True,height=150)
                 for _,row in df_up.iterrows():
-                    asin  = str(row[asin_col]).strip()
+                    msku  = str(row[msku_col]).strip()
                     fnsku = str(row[fnsku_col]).strip() if fnsku_col else ""
                     msku  = str(row[msku_col]).strip() if msku_col else ""
                     qty   = str(row[qty_col]).strip() if qty_col else ""
@@ -884,24 +873,24 @@ with tab1:
         confirm_clear("clear_req",requests_sheet,"الطلبات | Requests")
 
         ordered_data=get_cached(ordered_sheet)
-        ordered_asins={}
+        ordered_mskus={}
         if len(ordered_data)>1:
             for r in ordered_data[1:]:
                 while len(r)<8: r.append("")
-                ordered_asins[r[0].strip().upper()]=_to_int(r[6]) if r[6] else 1
+                ordered_mskus[r[0].strip().upper()]=_to_int(r[6]) if r[6] else 1
 
         st.write(f"**الإجمالي | Total: {len(rows)}**")
         for i,row in enumerate(rows,start=2):
             while len(row)<7: row.append("")
-            asin,fnsku,msku,qty,img,date_added,fname=row[0],row[1],row[2],row[3],row[4],row[5],row[6]
+            msku,asin,fnsku,qty,img,date_added,fname=row[0],row[1],row[2],row[3],row[4],row[5],row[6]
             c_img,c_info,c_act=st.columns([1,4,3])
             with c_img: show_img(img,75)
             with c_info:
-                st.markdown(f"**ASIN:** `{asin}`")
-                show_asin_info(asin)
+                st.markdown(f"**MSKU:** `{msku}`")
+                show_sku_info(msku)
                 st.markdown(f"**طلب | Requested Qty:** {qty}")
                 st.caption(f"📅 {date_added} | 📁 {fname}")
-                prev_count=ordered_asins.get(asin.upper(),0)
+                prev_count=ordered_mskus.get(msku.upper(),0)
                 if prev_count>0:
                     ordn=ordinal_map.get(prev_count,f"{prev_count+1}")
                     st.warning(f"🔁 تم الطلب للمرة {ordn} | Already ordered {prev_count} time(s)")
@@ -911,24 +900,24 @@ with tab1:
                     with st.popover("✅ وافق\nApprove"):
                         nq=st.text_input("Approved Qty",value=qty,key=f"amz_aqty_{i}")
                         if st.button("✅ تأكيد",key=f"amz_aconf_{i}"):
-                            safe_append(approved_sheet,[asin,fnsku,msku,qty,nq,img,date_added,now_str()])
+                            safe_append(approved_sheet,[msku,asin,fnsku,qty,nq,img,date_added,now_str()])
                             safe_delete(requests_sheet,i); st.rerun()
                 with cb:
                     if st.button("❌ غير\nمتوفر",key=f"amz_unavail_{i}"):
                         dn=now_str()
-                        un_ri,un_row=merge_or_get_existing_row(unavailable_sheet,asin)
+                        un_ri,un_row=merge_or_get_existing_row(unavailable_sheet,msku)
                         if un_ri:
                             while len(un_row)<7: un_row.append("")
                             cur_count,rest=parse_count_dates(un_row[6])
                             merged=append_count_date(rest,cur_count+1,dn)
                             safe_update_row(unavailable_sheet,un_ri,[un_row[0],un_row[1],un_row[2],qty,un_row[4] or img,un_row[5],merged])
                         else:
-                            safe_append(unavailable_sheet,[asin,fnsku,msku,qty,img,date_added,append_count_date("",1,dn)])
+                            safe_append(unavailable_sheet,[msku,asin,fnsku,qty,img,date_added,append_count_date("",1,dn)])
                         safe_delete(requests_sheet,i); st.rerun()
                 with cc:
                     if st.button("🛒 طلب\nOrder",key=f"amz_order_{i}"):
                         dn=now_str()
-                        ord_ri,ord_row=merge_or_get_existing_row(ordered_sheet,asin)
+                        ord_ri,ord_row=merge_or_get_existing_row(ordered_sheet,msku)
                         if ord_ri:
                             while len(ord_row)<8: ord_row.append("")
                             cur_count,rest=parse_count_dates(ord_row[7])
@@ -936,7 +925,7 @@ with tab1:
                             merged=append_count_date(rest,new_count,dn)
                             safe_update_row(ordered_sheet,ord_ri,[ord_row[0],ord_row[1],ord_row[2],qty,ord_row[4] or img,dn,str(new_count),merged])
                         else:
-                            safe_append(ordered_sheet,[asin,fnsku,msku,qty,img,dn,"1",append_count_date("",1,dn)])
+                            safe_append(ordered_sheet,[msku,asin,fnsku,qty,img,dn,"1",append_count_date("",1,dn)])
                         safe_delete(requests_sheet,i); st.rerun()
                 with cd:
                     if st.button("🗑️ حذف",key=f"amz_del_req_{i}"):
@@ -951,7 +940,7 @@ with tab2:
         st.info("لا توجد موافقات | No approvals yet.")
     else:
         rows_ap=data_ap[1:]
-        srch=st.text_input("🔍 بحث ASIN | Search ASIN",key="amz_srch_ap")
+        srch=st.text_input("🔍 بحث MSKU | Search MSKU",key="amz_srch_ap")
         indexed_ap=[(i+2,r) for i,r in enumerate(rows_ap)]
         filtered=[(ri,r) for ri,r in indexed_ap if not srch or srch.strip().upper() in r[0].upper()]
         df_ap=pd.DataFrame(rows_ap,columns=data_ap[0])
@@ -964,12 +953,12 @@ with tab2:
         st.write(f"**عرض | Showing: {len(filtered)} / {len(rows_ap)}**")
         for ri,row in filtered:
             while len(row)<8: row.append("")
-            asin,fnsku,msku,qty_r,qty_a,img,da,dap=row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7]
+            msku,asin,fnsku,qty_r,qty_a,img,da,dap=row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7]
             c_img,c_info,c_del=st.columns([1,5,1])
             with c_img: show_img(img,70)
             with c_info:
-                st.markdown(f"**ASIN:** `{asin}`")
-                show_asin_info(asin)
+                st.markdown(f"**MSKU:** `{msku}`")
+                show_sku_info(msku)
                 if qty_a and qty_a!=qty_r:
                     st.markdown(f"**طلبت | Req:** {qty_r} → **وافقوا | App:** ⚠️ **{qty_a}**")
                 else:
@@ -988,7 +977,7 @@ with tab3:
         st.info("لا يوجد | Nothing unavailable yet.")
     else:
         rows_un=data_un[1:]
-        srch=st.text_input("🔍 بحث ASIN",key="amz_srch_un")
+        srch=st.text_input("🔍 بحث MSKU",key="amz_srch_un")
         indexed_un=[(i+2,r) for i,r in enumerate(rows_un)]
         filtered=[(ri,r) for ri,r in indexed_un if not srch or srch.strip().upper() in r[0].upper()]
         df_un=pd.DataFrame(rows_un,columns=data_un[0])
@@ -1001,13 +990,14 @@ with tab3:
         st.write(f"**عرض | Showing: {len(filtered)} / {len(rows_un)}**")
         for ri,row in filtered:
             while len(row)<7: row.append("")
-            asin,fnsku,msku,qty,img,da,dm=row[0],row[1],row[2],row[3],row[4],row[5],row[6]
+            msku,asin,fnsku,qty,img,da,dm=row[0],row[1],row[2],row[3],row[4],row[5],row[6]
             cnt_un,dates_un=parse_count_dates(dm)
             c_img,c_info,c_act=st.columns([1,4,2])
             with c_img: show_img(img,70)
             with c_info:
-                st.markdown(f"**ASIN:** `{asin}`")
-                show_asin_info(asin)
+                st.markdown(f"**MSKU:** `{msku}`")
+                if asin: st.caption(f"ASIN: `{asin}`")
+                show_sku_info(msku)
                 st.markdown(f"**Qty:** {qty}")
                 if cnt_un>1: st.warning(f"🔁 تكرر {cnt_un} مرة | Marked unavailable {cnt_un}x")
                 if dates_un: st.caption(f"❌ تواريخ: {dates_un}")
@@ -1015,7 +1005,7 @@ with tab3:
                 with st.popover("↩️ رجّع للموافقة\nReturn to Approved"):
                     nq_un=st.text_input("الكمية المعدّلة",value=qty,key=f"amz_un_ret_qty_{ri}")
                     if st.button("✅ أرسل للموافقة",key=f"amz_un_ret_conf_{ri}"):
-                        safe_append(approved_sheet,[asin,fnsku,msku,qty,nq_un,img,da,now_str()])
+                        safe_append(approved_sheet,[msku,asin,fnsku,qty,nq_un,img,da,now_str()])
                         safe_delete(unavailable_sheet,ri); st.rerun()
                 if st.button("🗑️",key=f"amz_del_un_{ri}"):
                     safe_delete(unavailable_sheet,ri); st.rerun()
@@ -1029,7 +1019,7 @@ with tab4:
         st.info("لا يوجد | No ordered items yet.")
     else:
         rows_ord=data_ord[1:]
-        srch=st.text_input("🔍 بحث ASIN",key="amz_srch_ord")
+        srch=st.text_input("🔍 بحث MSKU",key="amz_srch_ord")
         indexed_ord=[(i+2,r) for i,r in enumerate(rows_ord)]
         filtered=[(ri,r) for ri,r in indexed_ord if not srch or srch.strip().upper() in r[0].upper()]
         df_ord=pd.DataFrame(rows_ord,columns=data_ord[0])
@@ -1042,13 +1032,14 @@ with tab4:
         st.write(f"**عرض | Showing: {len(filtered)} / {len(rows_ord)}**")
         for ri,row in filtered:
             while len(row)<8: row.append("")
-            asin,fnsku,msku,qty,img,da,cnt,note=row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7]
+            msku,asin,fnsku,qty,img,da,cnt,note=row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7]
             cnt_ord,dates_ord=parse_count_dates(note)
             c_img,c_info,c_act=st.columns([1,4,2])
             with c_img: show_img(img,70)
             with c_info:
-                st.markdown(f"**ASIN:** `{asin}`")
-                show_asin_info(asin)
+                st.markdown(f"**MSKU:** `{msku}`")
+                if asin: st.caption(f"ASIN: `{asin}`")
+                show_sku_info(msku)
                 st.markdown(f"**Quantity:** {qty}")
                 if cnt_ord>1: st.warning(f"🔁 تكرر {cnt_ord} مرة | Ordered {cnt_ord}x")
                 if dates_ord: st.caption(f"🗓️ تواريخ الطلب: {dates_ord}")
@@ -1059,7 +1050,7 @@ with tab4:
                     with st.popover("↩️ رجّع\nReturn"):
                         nq=st.text_input("الكمية المعدّلة",value=qty,key=f"amz_ret_qty_{ri}")
                         if st.button("✅ أرسل للموافقة",key=f"amz_ret_conf_{ri}"):
-                            safe_append(approved_sheet,[asin,fnsku,msku,qty,nq,img,da,now_str()])
+                            safe_append(approved_sheet,[msku,asin,fnsku,qty,nq,img,da,now_str()])
                             safe_delete(ordered_sheet,ri); st.rerun()
                 with cb:
                     if st.button("🗑️",key=f"amz_del_ord_{ri}"):
@@ -1073,7 +1064,7 @@ with tab5:
     col_t,_=st.columns([1,3])
     with col_t:
         st.download_button("⬇️ Template الجدولة",
-            data=make_empty_template(["ASN","ASIN","FNSKU","MSKU","Qty","تاريخ الجدولة"]),
+            data=make_empty_template(["ASN","MSKU","ASIN","FNSKU","Qty","تاريخ الجدولة"]),
             file_name=f"amz_schedule_template_{file_timestamp()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True)
@@ -1115,13 +1106,13 @@ with tab5:
                     msku =str(row[msku_c]).strip() if msku_c else ""
                     qty  =str(row[qty_c]).strip()  if qty_c  else ""
                     dval =str(row[date_c]).strip() if date_c else ""
-                    img  =links_map.get(asin.upper(),"")
+                    img  =links_map.get(msku.upper(),"")
                     pd_  =parse_excel_date(dval)
                     ds   =pd_.strftime("%Y-%m-%d") if pd_ else dval[:10]
-                    pair =(asn.upper(),asin.upper())
+                    pair =(asn.upper(),msku.upper())
                     if asn and asn.lower()!="nan":
                         if pair in ex_pairs: skipped+=1
-                        else: to_add.append([asn,asin,fnsk,msku,qty,ds,img,dn,"",""]); ex_pairs.add(pair)
+                        else: to_add.append([asn,msku,asin,fnsk,qty,ds,img,dn,"",""]); ex_pairs.add(pair)
                 safe_batch_append(scheduled_sheet,to_add)
                 msg=f"✅ أُضيف | Added: {len(to_add)}"
                 if skipped: msg+=f" | ⚠️ مكرر: {skipped}"
@@ -1166,7 +1157,7 @@ with tab5:
 
         c_s1,c_s2=st.columns(2)
         with c_s1: srch_asn=st.text_input("🔍 بحث ASN",key="amz_srch_asn")
-        with c_s2: srch_asin_sch=st.text_input("🔍 بحث ASIN",key="amz_srch_asin_sch")
+        with c_s2: srch_asin_sch=st.text_input("🔍 بحث MSKU",key="amz_srch_msku_sch")
         today=datetime.now().date()
         st.write(f"**إجمالي ASN | Total ASNs: {len(asn_groups)}**")
 
@@ -1200,10 +1191,10 @@ with tab5:
                             f'<span style="color:#94a3b8;font-size:11px;">🕐 {notif.get("ts","")}</span></div>',
                             unsafe_allow_html=True)
                         lm_t5=get_links_map()
-                        notif_asins=notif.get("asins",[])
-                        if notif_asins:
-                            ic=st.columns(min(len(notif_asins[:6]),6))
-                            for ci3,a3 in enumerate(notif_asins[:6]):
+                        notif_mskus=notif.get("mskus",[])
+                        if notif_mskus:
+                            ic=st.columns(min(len(notif_mskus[:6]),6))
+                            for ci3,a3 in enumerate(notif_mskus[:6]):
                                 iu3=lm_t5.get(a3.strip().upper(),"")
                                 with ic[ci3]:
                                     if iu3 and iu3.startswith("http"): st.image(iu3,width=60,caption=a3[:10])
@@ -1212,32 +1203,32 @@ with tab5:
 
             for r in items_:
                 while len(r)<10: r.append("")
-                asin_r,qty,img=r[1].strip(),r[4],r[6]
-                info=inv_map.get(asin_r.upper(),{})
+                msku_r,qty,img=r[1].strip(),r[4],r[6]
+                info=inv_map.get(msku_r.upper(),{})
                 monthly=info.get("sales",0)
                 is_al=monthly>0 and _to_int(qty)>monthly
                 c_img2,c_info2=st.columns([1,6])
                 with c_img2: show_img(img,60)
                 with c_info2:
-                    st.markdown(f"&nbsp;&nbsp;**ASIN:** `{asin_r}` | **Qty:** {qty}")
-                    show_asin_info(asin_r)
+                    st.markdown(f"&nbsp;&nbsp;**MSKU:** `{msku_r}` | **Qty:** {qty}")
+                    show_sku_info(msku_r)
                     if is_al: st.markdown(f"&nbsp;&nbsp;🔴 **تنبيه:** الكمية ({qty}) > المبيع الشهري ({monthly})")
 
             ca,cb,cc,cd=st.columns(4)
             with ca:
                 with st.popover("☑️ Check"):
                     select_all=st.checkbox("تحديد الكل",key=f"amz_chk_all_{asn}")
-                    selected_asins={}
+                    selected_mskus={}
                     for ri2,r in enumerate(items_):
                         while len(r)<10: r.append("")
-                        asin2=r[1].strip()
-                        selected_asins[asin2]=st.checkbox(f"`{asin2}` — Qty:{r[4]}",value=select_all,key=f"amz_chk_asin_{asn}_{ri2}")
+                        msku2=r[1].strip()
+                        selected_mskus[msku2]=st.checkbox(f"`{msku2}` — Qty:{r[4]}",value=select_all,key=f"amz_chk_msku_{asn}_{ri2}")
                     if st.button("✅ أرسل للتشييك",key=f"amz_send_chk_{asn}"):
-                        dn=now_str(); all_sel=all(selected_asins.values())
+                        dn=now_str(); all_sel=all(selected_mskus.values())
                         to_add=[]
                         for r in items_:
-                            asin2=r[1].strip()
-                            flag="" if all_sel else ("highlighted" if selected_asins.get(asin2,False) else "")
+                            msku2=r[1].strip()
+                            flag="" if all_sel else ("highlighted" if selected_mskus.get(msku2,False) else "")
                             to_add.append([r[0],r[1],r[2],r[3],r[4],r[5],r[6],dn,"",flag])
                         safe_batch_append(sheets["AMZ_Check"],to_add)
                         sch_d=get_cached(scheduled_sheet,force=True)
@@ -1278,8 +1269,8 @@ with tab_check:
         st.markdown("---")
         st.markdown("### 🔔 إشعارات الكنسل الأخيرة")
         for notif in st.session_state["amz_cancel_notifs"]:
-            asns_str=", ".join(notif.get("asins",[])[:5])
-            st.error(f"🚫 ASN **{notif.get('asn','')}** (📅 {notif.get('sdate','')}) — ASINs: {asns_str} — السبب: {notif.get('reason','')} — {notif.get('ts','')}")
+            mskus_str2=", ".join(notif.get("mskus",[])[:5])
+            st.error(f"🚫 ASN **{notif.get('asn','')}** (📅 {notif.get('sdate','')}) — MSKUs: {mskus_str2} — السبب: {notif.get('reason','')} — {notif.get('ts','')}")
         if st.button("✖️ مسح الإشعارات",key="amz_clear_notifs"):
             delete_all_cancel_notifications()
             st.session_state["amz_cancel_notifs"]=[]
@@ -1315,19 +1306,19 @@ with tab_check:
             st.markdown(
                 f'<div style="border-left:5px solid #8b5cf6;background:#1a0a2e;border-radius:10px;padding:8px 14px;margin-bottom:4px;color:white;">'
                 f'<b>ASN:</b> {asn} &nbsp;|&nbsp; 📅 <b>Schedule Date:</b> <b>{sdate}</b>'
-                +(' &nbsp; 🔴 <b>يوجد ASINs مميزة</b>' if has_hl else '')
+                +(' &nbsp; 🔴 <b>يوجد MSKUs مميزة</b>' if has_hl else '')
                 +'</div>',unsafe_allow_html=True)
 
             for r in items_:
                 while len(r)<10: r.append("")
-                asin_r,qty,img,flag=r[1].strip(),r[4],r[6],r[9]
+                msku_r,qty,img,flag=r[1].strip(),r[4],r[6],r[9]
                 is_hl=flag=="highlighted"
                 c_img2,c_info2=st.columns([1,6])
                 with c_img2: show_img(img,60)
                 with c_info2:
                     tag=" 🔴 **مميز | Highlighted**" if is_hl else ""
-                    st.markdown(f"**ASIN:** `{asin_r}` | **Qty:** {qty}{tag}")
-                    show_asin_info(asin_r)
+                    st.markdown(f"**MSKU:** `{msku_r}` | **Qty:** {qty}{tag}")
+                    show_sku_info(msku_r)
 
             ca,cb=st.columns(2)
             with ca:
@@ -1345,11 +1336,11 @@ with tab_check:
                         to_add=[[r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],f"تشييك — {cancel_reason}",dn] for r in items_]
                         safe_batch_append(cancelled_sheet,to_add)
                         for idx in sorted(grp["indices"],reverse=True): safe_delete(sheets["AMZ_Check"],idx)
-                        hl_asins=[r[1].strip() for r in items_ if len(r)>9 and r[9]=="highlighted"]
-                        all_asins=[r[1].strip() for r in items_]
-                        notif_asins=hl_asins if hl_asins else all_asins
-                        new_notif={"asn":asn,"sdate":sdate,"asins":notif_asins,"reason":cancel_reason,"ts":dn}
-                        save_cancel_notification(asn,notif_asins,sdate,cancel_reason,dn)
+                        hl_mskus=[r[1].strip() for r in items_ if len(r)>9 and r[9]=="highlighted"]
+                        all_mskus=[r[1].strip() for r in items_]
+                        notif_mskus=hl_mskus if hl_mskus else all_mskus
+                        new_notif={"asn":asn,"sdate":sdate,"mskus":notif_mskus,"reason":cancel_reason,"ts":dn}
+                        save_cancel_notification(asn,notif_mskus,sdate,cancel_reason,dn)
                         if "amz_cancel_notifs" not in st.session_state:
                             st.session_state["amz_cancel_notifs"]=[]
                         st.session_state["amz_cancel_notifs"].insert(0,new_notif)
@@ -1378,13 +1369,14 @@ with tab6:
         st.write(f"**عرض | Showing: {len(filtered)} / {len(rows_can)}**")
         for ri,row in filtered:
             while len(row)<10: row.append("")
-            asn,asin_r,fnsku,msku,qty,sd,img,dadd,reason,dcan=\
+            asn,msku_r,asin_r,fnsku,qty,sd,img,dadd,reason,dcan=\
                 row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],row[8],row[9]
             c_img,c_info,c_del=st.columns([1,5,1])
             with c_img: show_img(img,70)
             with c_info:
-                st.markdown(f"**ASN:** `{asn}` | **ASIN:** `{asin_r}`")
-                show_asin_info(asin_r)
+                st.markdown(f"**ASN:** `{asn}` | **MSKU:** `{msku_r}`")
+                if asin_r: st.caption(f"ASIN: `{asin_r}`")
+                show_sku_info(msku_r)
                 st.markdown(f"**Qty:** {qty}")
                 st.caption(f"📅 Schedule: {sd} | 🚫 Cancelled: {dcan}")
                 if reason: st.caption(f"📝 السبب: {reason}")
@@ -1432,22 +1424,23 @@ with tab7:
                 edited_items=[]
                 for ri2,r in enumerate(grp["items"]):
                     while len(r)<8: r.append("")
-                    asin_r,fnsk,msk,qty,img=r[1].strip(),r[2],r[3],r[4],r[6]
+                    msku_r,asin_r,fnsk,qty,img=r[1].strip(),r[2],r[3],r[4],r[6]
                     c_img2,c_s2,c_q2=st.columns([1,3,2])
                     with c_img2: show_img(img,55)
                     with c_s2:
-                        st.markdown(f"**ASIN:** `{asin_r}`")
-                        show_asin_info(asin_r)
+                        st.markdown(f"**MSKU:** `{msku_r}`")
+                        if asin_r: st.caption(f"ASIN: `{asin_r}`")
+                        show_sku_info(msku_r)
                     with c_q2:
                         new_qty=st.text_input("Qty",value=qty,key=f"amz_res_qty_{asn}_{ri2}")
-                    edited_items.append((asin_r,fnsk,msk,new_qty,img))
+                    edited_items.append((msku_r,asin_r,fnsk,new_qty,img))
                 if st.button("✅ أرجع للجدولة",key=f"amz_ret_sch_{asn}",type="primary"):
                     if not new_date.strip():
                         st.error("❌ أدخل تاريخ جديد")
                     else:
                         dn=now_str()
-                        to_add=[[new_asn,asin_r,fnsk,msk,qty,new_date,links_map2.get(asin_r.upper(),img),dn,"",""]
-                                for asin_r,fnsk,msk,qty,img in edited_items]
+                        to_add=[[new_asn,msku_r,asin_r,fnsk,qty,new_date,links_map2.get(msku_r.upper(),img),dn,"",""]
+                                for msku_r,asin_r,fnsk,qty,img in edited_items]
                         safe_batch_append(scheduled_sheet,to_add)
                         for idx in sorted(grp["indices"],reverse=True): safe_delete(reschedule_sheet,idx)
                         st.success(f"✅ تم الإرجاع للجدولة — ASN: {new_asn}"); st.rerun()
@@ -1462,29 +1455,29 @@ with tab8:
     if len(data_sc8)>1:
         for row in data_sc8[1:]:
             while len(row)<8: row.append("")
-            asn,asin_r,fnsku,msku,qty,sdate,img=row[0],row[1],row[2],row[3],row[4],row[5],row[6]
-            info=inv_map.get(asin_r.upper(),{})
+            asn,msku_r,asin_r,fnsku,qty,sdate,img=row[0],row[1],row[2],row[3],row[4],row[5],row[6]
+            info=inv_map.get(msku_r.upper(),{})
             monthly=info.get("sales",0)
             stock=info.get("total_stock",0)
             try:
                 if monthly>0 and _to_int(qty)>monthly:
-                    alerts.append((asn,asin_r,qty,monthly,stock,sdate,img))
+                    alerts.append((asn,msku_r,qty,monthly,stock,sdate,img))
             except: pass
     if not inv_map:
         st.info("ارفع ملف المخزون أولاً | Upload Inventory first")
     elif not alerts:
         st.success("✅ لا توجد تنبيهات | No alerts")
     else:
-        df_al=pd.DataFrame(alerts,columns=["ASN","ASIN","Scheduled Qty","Monthly Sales","Total Stock","Schedule Date","Image URL"])
+        df_al=pd.DataFrame(alerts,columns=["ASN","MSKU","Scheduled Qty","Monthly Sales","Total Stock","Schedule Date","Image URL"])
         c1,c2=st.columns(2)
         with c1: dl_btn(df_al,"amz_alerts")
         with c2: st.error(f"⚠️ تنبيهات | Alerts: {len(alerts)}")
-        for asn,asin_r,qty,monthly,stock,sdate,img in alerts:
+        for asn,msku_r,qty,monthly,stock,sdate,img in alerts:
             c_img,c_info=st.columns([1,6])
             with c_img: show_img(img,70)
             with c_info:
-                st.markdown(f"**ASN:** `{asn}` | **ASIN:** `{asin_r}`")
-                show_asin_info(asin_r)
+                st.markdown(f"**ASN:** `{asn}` | **MSKU:** `{msku_r}`")
+                show_sku_info(msku_r)
                 st.markdown(f"🔴 **الكمية المجدولة:** {qty} > **المبيع الشهري:** {monthly}")
                 st.caption(f"📅 تاريخ الجدولة: {sdate}")
             st.divider()
@@ -1624,26 +1617,26 @@ with tab10:
     else:
         multi_counts_sr=build_daily_sales_counts(day_dates_sr)
         review_rows=[]
-        for asin_up,info in inv_map.items():
+        for msku_up,info in inv_map.items():
             stock=info.get("total_stock",0); sales_m=info.get("sales",0)
             eff_avg=sales_m/30 if sales_m>0 else 0
             days_so=round(stock/eff_avg) if eff_avg>0 else 9999
             if days_so>=cov_days_sr and eff_avg>0: continue
             if eff_avg==0 and stock>0: continue
-            day_counts=multi_counts_sr.get(asin_up,{d:0 for d in day_dates_sr})
+            day_counts=multi_counts_sr.get(msku_up,{d:0 for d in day_dates_sr})
             review_rows.append({
-                "asin":info["asin"],"asin_up":asin_up,"stock":stock,"sales_month":sales_m,
+                "msku":info["msku"],"msku_up":msku_up,"stock":stock,"sales_month":sales_m,
                 "img":info["img"],"days_to_stockout":days_so,
                 "suggested_qty":max(round(eff_avg*18),1) if eff_avg>0 else 0,
                 "day_counts":day_counts,
             })
         transferred=st.session_state.get("amz_transferred_skus",[])
-        existing_in_review={r["asin_up"] for r in review_rows}
+        existing_in_review={r["msku_up"] for r in review_rows}
         for tr in transferred:
-            if tr["asin_up"] not in existing_in_review:
+            if tr["msku_up"] not in existing_in_review:
                 avg_tr=tr.get("effective_avg",0)
                 review_rows.append({
-                    "asin":tr["msku"],"asin_up":tr["asin_up"],"stock":tr["stock"],
+                    "msku":tr["msku"],"msku_up":tr["msku_up"],"stock":tr["stock"],
                     "sales_month":tr["sales_month"],"img":tr["img"],
                     "days_to_stockout":tr.get("days_to_stockout",0),
                     "suggested_qty":round(avg_tr*18) if avg_tr>0 else 0,
@@ -1652,15 +1645,15 @@ with tab10:
                 })
         review_rows.sort(key=lambda r: r["days_to_stockout"])
         if not review_rows:
-            st.success("✅ لا توجد ASINs محتاجة مراجعة | No ASINs need stock review")
+            st.success("✅ لا توجد MSKUs محتاجة مراجعة | No MSKUs need stock review")
         else:
-            df_sr2=pd.DataFrame([{"ASIN":r["msku"],"Yesterday":r["day_counts"].get(d1_sr,0),
+            df_sr2=pd.DataFrame([{"MSKU":r["msku"],"Yesterday":r["day_counts"].get(d1_sr,0),
                 "Day Before":r["day_counts"].get(d2_sr,0),"3 Days":r["day_counts"].get(d3_sr,0),
                 "Stock":r["stock"],"Monthly Sales":r["sales_month"],
                 "Suggested Qty":r["suggested_qty"],"Days to Stockout":r["days_to_stockout"]} for r in review_rows])
             c1,c2=st.columns(2)
             with c1: dl_btn(df_sr2,"amz_stock_review")
-            with c2: st.error(f"🔴 ASINs محتاجة مراجعة: {len(review_rows)}")
+            with c2: st.error(f"🔴 MSKUs محتاجة مراجعة: {len(review_rows)}")
             for r in review_rows:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],70)
@@ -1680,14 +1673,14 @@ with tab10:
         st.subheader("⛔ مخزون منتهي بالكامل | Completely Out of Stock")
         missing_rows=compute_missing_inventory_rows(day_dates_sr)
         if not missing_rows:
-            st.success("✅ لا يوجد ASINs خارجة عن المخزون")
+            st.success("✅ لا يوجد MSKUs خارجة عن المخزون")
         else:
             df_miss=pd.DataFrame([{"MSKU":r["msku"],"Yesterday":r["day_counts"].get(d1_sr,0),
                 "Day Before":r["day_counts"].get(d2_sr,0),"3 Days":r["day_counts"].get(d3_sr,0),
                 "Estimated Monthly Sales":r["est_monthly_sales"]} for r in missing_rows])
             c1,c2=st.columns(2)
             with c1: dl_btn(df_miss,"amz_out_of_stock",key="amz_dlbtn_oos_t10")
-            with c2: st.error(f"⛔ ASINs منتهية: {len(missing_rows)}")
+            with c2: st.error(f"⛔ MSKUs منتهية: {len(missing_rows)}")
             for r in missing_rows:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],70)
@@ -1720,12 +1713,13 @@ with tab11:
         st.write(f"**الإجمالي: {len(rows_ex)}**")
         for i,row in enumerate(rows_ex,start=2):
             while len(row)<10: row.append("")
-            asn,asin_r,fnsku,msku,qty,sd,img,dadd,dexp=row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],row[8]
+            asn,msku_r,asin_r,fnsku,qty,sd,img,dadd,dexp=row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],row[8]
             c_img,c_info,c_del=st.columns([1,5,1])
             with c_img: show_img(img,70)
             with c_info:
-                st.markdown(f"**ASN:** `{asn}` | **ASIN:** `{asin_r}`")
-                show_asin_info(asin_r)
+                st.markdown(f"**ASN:** `{asn}` | **MSKU:** `{msku_r}`")
+                if asin_r: st.caption(f"ASIN: `{asin_r}`")
+                show_sku_info(msku_r)
                 st.markdown(f"**Qty:** {qty}")
                 st.caption(f"📅 Schedule: {sd} | 🗂️ Expired: {dexp}")
             with c_del:
@@ -1801,11 +1795,11 @@ with tab13:
     else:
         multi_counts_rv=build_daily_sales_counts(day_dates_rv)
         sales_review_rows=[]
-        for asin_up,info in inv_map.items():
+        for msku_up,info in inv_map.items():
             stock=info.get("total_stock",0); sales_m=info.get("sales",0)
             if sales_m==0: continue
             eff_avg=sales_m/30
-            day_counts_rv=multi_counts_rv.get(asin_up,{d:0 for d in day_dates_rv})
+            day_counts_rv=multi_counts_rv.get(msku_up,{d:0 for d in day_dates_rv})
             qty_yesterday=day_counts_rv.get(e1,0)
             if qty_yesterday==0: continue
             days_so_monthly=round(stock/eff_avg) if eff_avg>0 else 9999
@@ -1816,20 +1810,20 @@ with tab13:
             valid_days={1,2,3,4,5,6,7,8,10}
             if days_so_today not in valid_days: continue
             sales_review_rows.append({
-                "asin":info["asin"],"asin_up":asin_up,"stock":stock,"sales_month":sales_m,"img":info["img"],
+                "msku":info["msku"],"msku_up":msku_up,"stock":stock,"sales_month":sales_m,"img":info["img"],
                 "days_to_stockout":days_so_monthly,"days_to_stockout_today":days_so_today,"day_counts":day_counts_rv,
             })
         sales_review_rows.sort(key=lambda r:(-r["day_counts"].get(e1,0),-r["sales_month"]))
         if not sales_review_rows:
             st.success("✅ لا توجد ASINs محتاجة مراجعة مبيعات | No ASINs need sales review")
         else:
-            df_sales_rv=pd.DataFrame([{"ASIN":r["msku"],"Yesterday":r["day_counts"].get(e1,0),
+            df_sales_rv=pd.DataFrame([{"MSKU":r["msku"],"Yesterday":r["day_counts"].get(e1,0),
                 "Day Before":r["day_counts"].get(e2,0),"3 Days":r["day_counts"].get(e3,0),
                 "Stock":r["stock"],"Monthly Sales":r["sales_month"],
                 "Days to Stockout Today Rate":r["days_to_stockout_today"]} for r in sales_review_rows])
             c1,c2=st.columns(2)
             with c1: dl_btn(df_sales_rv,"amz_sales_review")
-            with c2: st.warning(f"📈 ASINs محتاجة مراجعة: {len(sales_review_rows)}")
+            with c2: st.warning(f"📈 MSKUs محتاجة مراجعة: {len(sales_review_rows)}")
             for r in sales_review_rows:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],70)
@@ -1847,9 +1841,9 @@ with tab13:
         st.subheader("⛔ مخزون منتهي بالكامل | Completely Out of Stock")
         missing_rv=compute_missing_inventory_rows(day_dates_rv)
         if not missing_rv:
-            st.success("✅ لا يوجد ASINs خارجة عن المخزون")
+            st.success("✅ لا يوجد MSKUs خارجة عن المخزون")
         else:
-            df_miss_rv=pd.DataFrame([{"ASIN":r["msku"],"Yesterday":r["day_counts"].get(e1,0),
+            df_miss_rv=pd.DataFrame([{"MSKU":r["msku"],"Yesterday":r["day_counts"].get(e1,0),
                 "Day Before":r["day_counts"].get(e2,0),"3 Days":r["day_counts"].get(e3,0),
                 "Estimated Monthly Sales":r["est_monthly_sales"]} for r in missing_rv])
             c1,c2=st.columns(2)
@@ -1967,26 +1961,26 @@ with tab14:
 
         sales_tab_rows=[]
         _new_transferred=[]
-        for asin_up,info in inv_map.items():
+        for msku_up,info in inv_map.items():
             stock=info.get("total_stock",0); sales_m=info.get("sales",0)
-            day_counts=multi_counts_t14.get(asin_up,{d:0 for d in sales_dates})
+            day_counts=multi_counts_t14.get(msku_up,{d:0 for d in sales_dates})
             total_recent=sum(day_counts.values())
             avg_daily=(total_recent/sales_days_t14) if sales_days_t14>0 else (sales_m/30 if sales_m>0 else 0)
             eff_avg=avg_daily if avg_daily>0 else (sales_m/30 if sales_m>0 else 0)
             days_so=round(stock/eff_avg) if eff_avg>0 else 9999
             sales_tab_rows.append({
-                "asin":info["asin"],"asin_up":asin_up,"stock":stock,"sales_month":sales_m,
+                "msku":info["msku"],"msku_up":msku_up,"stock":stock,"sales_month":sales_m,
                 "img":info["img"],"day_counts":day_counts,"effective_avg":eff_avg,"days_to_stockout":days_so,
             })
         sales_tab_rows.sort(key=lambda r:-r["day_counts"].get(sales_dates[0],0) if sales_dates else 0)
 
         srch_t14=st.text_input("🔍 بحث ASIN",key="amz_srch_t14")
         if srch_t14.strip():
-            sales_tab_rows=[r for r in sales_tab_rows if srch_t14.strip().upper() in r["asin_up"]]
+            sales_tab_rows=[r for r in sales_tab_rows if srch_t14.strip().upper() in r["msku_up"]]
 
         if sales_tab_rows:
             df_t14=pd.DataFrame([
-                {"ASIN":r["msku"],**{sales_labels[i]:r["day_counts"].get(d,0) for i,d in enumerate(sales_dates)},
+                {"MSKU":r["msku"],**{sales_labels[i]:r["day_counts"].get(d,0) for i,d in enumerate(sales_dates)},
                  "مخزون":r["stock"],"مبيع شهري":r["sales_month"]} for r in sales_tab_rows])
             c1,c2=st.columns(2)
             with c1: dl_btn(df_t14,"amz_sales_daily",key="amz_dlbtn_t14")
@@ -1997,7 +1991,7 @@ with tab14:
             with c_img: show_img(r["img"],70)
             with c_inf:
                 st.markdown(f"**MSKU:** `{r['msku']}`")
-                show_asin_info(r["msku"])
+                show_sku_info(r["msku"])
                 y_d=sales_dates[0] if sales_dates else None
                 y_cnt=r["day_counts"].get(y_d,0) if y_d else 0
                 bg_y="#14532d" if y_cnt>0 else "#7f1d1d"
@@ -2031,7 +2025,7 @@ with tab14:
                 is_needs_sched_only=(not stock_ok and "محتاج جدولة" in badge_text and not sched and not un_notes)
                 if is_needs_sched_only:
                     _new_transferred.append({
-                        "asin":r["msku"],"asin_up":r["asin_up"],"stock":r["stock"],
+                        "msku":r["msku"],"msku_up":r["msku_up"],"stock":r["stock"],
                         "sales_month":r["sales_month"],"img":r["img"],
                         "effective_avg":r["effective_avg"],"days_to_stockout":r["days_to_stockout"],
                         "day_counts":r["day_counts"],
@@ -2046,34 +2040,34 @@ with tab14:
 # ══ TAB 15 — تحليل الجدولة ══
 with tab15:
     st.subheader("🗓️ تحليل الجدولة المقترحة | Schedule Analysis")
-    st.caption("ارفع أو الصق ASINs وهيجيلك اقتراحات جدولة | Upload or paste ASINs for scheduling suggestions")
+    st.caption("ارفع أو الصق MSKUs وهيجيلك اقتراحات جدولة | Upload or paste MSKUs for scheduling suggestions")
     if not inv_map:
         st.info("ارفع ملف المخزون أولاً | Upload Inventory first")
     else:
         method_t15=st.radio("طريقة الإدخال:",["📂 رفع ملف | Upload","✏️ لصق | Paste"],horizontal=True,key="amz_method_t15")
-        analysis_asins=[]
+        analysis_mskus=[]
         if "Upload" in method_t15:
-            upl_t15=st.file_uploader("ارفع Excel أو CSV (عمود ASIN)",type=["xlsx","xls","csv"],key="amz_upl_t15")
+            upl_t15=st.file_uploader("ارفع Excel أو CSV (عمود MSKU)",type=["xlsx","xls","csv"],key="amz_upl_t15")
             if upl_t15:
                 try:
                     df_t15=pd.read_csv(upl_t15,dtype=str).fillna("") if upl_t15.name.endswith(".csv") \
                         else pd.read_excel(upl_t15,dtype=str).fillna("")
-                    asin_col_t15=None
+                    msku_col_t15=None
                     for c in df_t15.columns:
-                        if "asin" in c.strip().lower(): asin_col_t15=c; break
-                    if not asin_col_t15: asin_col_t15=df_t15.columns[0]
-                    analysis_asins=[str(r[asin_col_t15]).strip() for _,r in df_t15.iterrows()
-                                    if str(r[asin_col_t15]).strip() and str(r[asin_col_t15]).strip().lower()!="nan"]
-                    st.success(f"✅ {len(analysis_asins)} ASIN جاهز")
+                        if "msku" in c.strip().lower() or "seller-sku" in c.strip().lower(): msku_col_t15=c; break
+                    if not msku_col_t15: msku_col_t15=df_t15.columns[0]
+                    analysis_mskus=[str(r[msku_col_t15]).strip() for _,r in df_t15.iterrows()
+                                    if str(r[msku_col_t15]).strip() and str(r[msku_col_t15]).strip().lower()!="nan"]
+                    st.success(f"✅ {len(analysis_mskus)} MSKU جاهز")
                 except Exception as e:
                     st.error(f"❌ {e}")
         else:
-            pasted_t15=st.text_area("الصق ASINs (كل واحد في سطر):",height=120,key="amz_paste_t15",placeholder="B0DJ76S46P\nB0BH1F3JHV")
+            pasted_t15=st.text_area("الصق MSKUs (كل واحد في سطر):",height=120,key="amz_paste_t15",placeholder="B0DJ76S46P\nB0BH1F3JHV")
             if pasted_t15.strip():
-                analysis_asins=[l.strip() for l in pasted_t15.strip().splitlines() if l.strip()]
-                st.success(f"✅ {len(analysis_asins)} ASIN")
+                analysis_mskus=[l.strip() for l in pasted_t15.strip().splitlines() if l.strip()]
+                st.success(f"✅ {len(analysis_mskus)} MSKU")
 
-        if analysis_asins:
+        if analysis_mskus:
             st.divider()
             today_t15=datetime.now().date()
             settings_t15=load_settings()
@@ -2083,15 +2077,15 @@ with tab15:
             recent_dates_t15=[today_t15-timedelta(days=i) for i in range(1,sales_days_t15+1)]
             multi_counts_t15=build_daily_sales_counts(recent_dates_t15)
             excel_rows_t15=[]
-            st.write(f"**تحليل {len(analysis_asins)} ASIN — أيام التغطية: {cov_t15} يوم**")
+            st.write(f"**تحليل {len(analysis_mskus)} MSKU — أيام التغطية: {cov_t15} يوم**")
 
-            for asin_raw in analysis_asins:
-                asin_up=asin_raw.strip().upper()
-                info=inv_map.get(asin_up)
-                st.markdown(f"### 📦 ASIN: `{asin_raw}`")
+            for msku_raw in analysis_mskus:
+                msku_up=msku_raw.strip().upper()
+                info=inv_map.get(msku_up)
+                st.markdown(f"### 📦 MSKU: `{msku_raw}`")
                 if not info:
-                    st.error("⛔ هذا ASIN مش موجود في المخزون — مخزونه انتهى أو لم يُرفع")
-                    day_counts_miss=multi_counts_t15.get(asin_up,{})
+                    st.error("⛔ هذا MSKU مش موجود في المخزون — مخزونه انتهى أو لم يُرفع")
+                    day_counts_miss=multi_counts_t15.get(msku_up,{})
                     total_miss=sum(day_counts_miss.values())
                     if total_miss>0:
                         avg_miss=total_miss/sales_days_t15
@@ -2106,7 +2100,7 @@ with tab15:
                             f'📦 الكمية المقترحة ({cov_t15} يوم): <b style="color:#fca5a5;">{suggested_urgent}</b><br>'
                             f'<span style="color:#f87171;font-size:12px;">⚠️ مخزون منتهي — يُنصح بالجدولة فوراً</span>'
                             f'</div>',unsafe_allow_html=True)
-                        excel_rows_t15.append({"ASIN":asin_raw,"المخزون":0,"مبيع شهري":est_monthly,
+                        excel_rows_t15.append({"MSKU":msku_raw,"المخزون":0,"مبيع شهري":est_monthly,
                             "متوسط يومي":round(avg_miss,2),"نفاد خلال":"خلص",
                             "تاريخ جدولة #1":urgent_date.strftime("%Y-%m-%d"),
                             "وصول #1":(urgent_date+timedelta(days=delay_t15)).strftime("%Y-%m-%d"),
@@ -2114,7 +2108,7 @@ with tab15:
                             "تاريخ جدولة #2":"","وصول #2":"","كمية #2":"","ملاحظة #2":"",
                             "تاريخ جدولة #3":"","وصول #3":"","كمية #3":"","ملاحظة #3":""})
                     else:
-                        excel_rows_t15.append({"ASIN":asin_raw,"المخزون":0,"مبيع شهري":0,
+                        excel_rows_t15.append({"MSKU":msku_raw,"المخزون":0,"مبيع شهري":0,
                             "متوسط يومي":0,"نفاد خلال":"خلص",
                             "تاريخ جدولة #1":"","وصول #1":"","كمية #1":"","ملاحظة #1":"مخزون منتهي ولا مبيعات",
                             "تاريخ جدولة #2":"","وصول #2":"","كمية #2":"","ملاحظة #2":"",
@@ -2123,7 +2117,7 @@ with tab15:
 
                 stock=info.get("total_stock",0); sales_m=info.get("sales",0); img=info.get("img","")
                 avg_daily=sales_m/30 if sales_m>0 else 0
-                day_counts_t15=multi_counts_t15.get(asin_up,{d:0 for d in recent_dates_t15})
+                day_counts_t15=multi_counts_t15.get(msku_up,{d:0 for d in recent_dates_t15})
                 recent_total=sum(day_counts_t15.values())
                 avg_daily_recent=(recent_total/sales_days_t15) if sales_days_t15>0 else avg_daily
                 eff_avg=avg_daily_recent if avg_daily_recent>0 else avg_daily
@@ -2133,6 +2127,7 @@ with tab15:
                 c_img_t15,c_info_t15=st.columns([1,6])
                 with c_img_t15: show_img(img,65)
                 with c_info_t15:
+                    st.markdown(f"**MSKU:** `{msku_raw}`")
                     st.markdown(f"📦 **مخزون:** **{stock}** | 📈 **شهري:** **{sales_m}** | 📊 **يومي أخير:** **{avg_daily_recent:.1f}**")
                     if eff_avg>0:
                         st.markdown(f"⏳ **متوقع النفاد:** **{days_so} يوم** ({stockout_date.strftime('%Y-%m-%d')})")
@@ -2145,7 +2140,7 @@ with tab15:
                     if len(sd)<=1: continue
                     for row in sd[1:]:
                         while len(row)<6: row.append("")
-                        if row[1].strip().upper()==asin_up:
+                        if row[1].strip().upper()==msku_up:
                             d_p=parse_excel_date(row[5])
                             existing_scheds.append({"asn":row[0],"qty":row[4],"date":row[5],"parsed":d_p,"source":sk})
                 existing_scheds.sort(key=lambda s:s["parsed"] or datetime.max)
@@ -2198,9 +2193,9 @@ with tab15:
                         +(f'<br><span style="color:#fcd34d;font-size:12px;">📝 {sg["note"]}</span>' if sg["note"] else "")
                         +'</div>',unsafe_allow_html=True)
 
-                render_recent_expired_note(asin_raw)
-                for note in get_unavailable_ordered_note(asin_raw): st.caption(note)
-                excel_row_t15={"ASIN":asin_raw,"المخزون":stock,"مبيع شهري":sales_m,
+                render_recent_expired_note(msku_raw)
+                for note in get_unavailable_ordered_note(msku_raw): st.caption(note)
+                excel_row_t15={"MSKU":msku_raw,"المخزون":stock,"مبيع شهري":sales_m,
                                 "متوسط يومي":round(eff_avg,2),"نفاد خلال":days_so if eff_avg>0 else "—"}
                 for sg in suggested_list:
                     n=sg["num"]
@@ -2230,34 +2225,34 @@ with tab16:
         all_dates_t16=list({d for d in dates_1d+dates_3d+dates_7d})
         counts_t16=build_daily_sales_counts(all_dates_t16)
 
-        def asin_sold_in(asin_up,dates_list):
-            dc=counts_t16.get(asin_up,{})
+        def msku_sold_in(msku_up,dates_list):
+            dc=counts_t16.get(msku_up,{})
             return sum(dc.get(d,0) for d in dates_list)>0
 
         no_sale_1d=[]; no_sale_3d=[]; no_sale_7d=[]
-        for asin_up,info in inv_map.items():
-            row_t16={"asin":info["asin"],"asin_up":asin_up,"stock":info["total_stock"],"sales_month":info["sales"],"img":info["img"]}
-            if not asin_sold_in(asin_up,dates_1d): no_sale_1d.append(row_t16)
-            if not asin_sold_in(asin_up,dates_3d): no_sale_3d.append(row_t16)
-            if not asin_sold_in(asin_up,dates_7d): no_sale_7d.append(row_t16)
+        for msku_up,info in inv_map.items():
+            row_t16={"msku":info["msku"],"msku_up":msku_up,"stock":info["total_stock"],"sales_month":info["sales"],"img":info["img"]}
+            if not msku_sold_in(msku_up,dates_1d): no_sale_1d.append(row_t16)
+            if not msku_sold_in(msku_up,dates_3d): no_sale_3d.append(row_t16)
+            if not msku_sold_in(msku_up,dates_7d): no_sale_7d.append(row_t16)
         no_sale_1d.sort(key=lambda x:-x["stock"])
         no_sale_3d.sort(key=lambda x:-x["stock"])
         no_sale_7d.sort(key=lambda x:-x["stock"])
 
         def render_no_sale_list(rows,period_label,dl_key):
             if not rows:
-                st.success(f"✅ لا يوجد ASINs بدون مبيعات في {period_label}")
+                st.success(f"✅ لا يوجد MSKUs بدون مبيعات في {period_label}")
                 return
-            df_ns=pd.DataFrame([{"ASIN":r["msku"],"مخزون | Stock":r["stock"],"مبيع شهري | Monthly Sales":r["sales_month"]} for r in rows])
+            df_ns=pd.DataFrame([{"MSKU":r["msku"],"مخزون | Stock":r["stock"],"مبيع شهري | Monthly Sales":r["sales_month"]} for r in rows])
             c1,c2=st.columns(2)
             with c1: dl_btn(df_ns,dl_key,key=f"amz_dlbtn_{dl_key}")
-            with c2: st.warning(f"⚠️ {len(rows)} ASIN بدون مبيعات")
+            with c2: st.warning(f"⚠️ {len(rows)} MSKU بدون مبيعات")
             delay_ns=int(load_settings().get("schedule_delay_days","3") or 3)
             for r in rows:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],60)
                 with c_inf:
-                    
+                    st.markdown(f"**MSKU:** `{r['msku']}`")
                     st.markdown(f"📦 **مخزون:** {r['stock']} | 📈 **شهري:** {r['sales_month']}")
                     sched_ns=get_latest_schedule_info(r["msku"])
                     if sched_ns:
