@@ -1682,7 +1682,7 @@ with tab10:
         if not missing_rows:
             st.success("✅ لا يوجد ASINs خارجة عن المخزون")
         else:
-            df_miss=pd.DataFrame([{"ASIN":r["asin"],"Yesterday":r["day_counts"].get(d1_sr,0),
+            df_miss=pd.DataFrame([{"MSKU":r["msku"],"Yesterday":r["day_counts"].get(d1_sr,0),
                 "Day Before":r["day_counts"].get(d2_sr,0),"3 Days":r["day_counts"].get(d3_sr,0),
                 "Estimated Monthly Sales":r["est_monthly_sales"]} for r in missing_rows])
             c1,c2=st.columns(2)
@@ -1692,7 +1692,7 @@ with tab10:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],70)
                 with c_inf:
-                    st.markdown(f"**ASIN:** `{r['asin']}`")
+                    st.markdown(f"**MSKU:** `{r['msku']}`")
                     st.error("⛔ مخزونه انتهى — مش موجود في ملف المخزون")
                     st.markdown("🛒 "+render_day_counts_md(r["day_counts"],day_dates_sr,day_labels_sr))
                     st.markdown(f"📈 **مبيع شهري تقديري:** **{r['est_monthly_sales']}**")
@@ -1834,7 +1834,7 @@ with tab13:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],70)
                 with c_inf:
-                    st.markdown(f"**ASIN:** `{r['asin']}`")
+                    st.markdown(f"**MSKU:** `{r['msku']}`")
                     st.markdown(f"📦 **مخزون:** {r['stock']} | 📈 **شهري:** {r['sales_month']}")
                     st.markdown("🛒 "+render_day_counts_md(r["day_counts"],day_dates_rv,day_labels_rv))
                     st.markdown(f"⚡ **نفاد خلال (بيع اليوم):** {r['days_to_stockout_today']} يوم")
@@ -1859,7 +1859,7 @@ with tab13:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],70)
                 with c_inf:
-                    st.markdown(f"**ASIN:** `{r['asin']}`")
+                    st.markdown(f"**MSKU:** `{r['msku']}`")
                     st.error("⛔ مخزونه انتهى — مش موجود في ملف المخزون")
                     st.markdown("🛒 "+render_day_counts_md(r["day_counts"],day_dates_rv,day_labels_rv))
                     st.markdown(f"📈 **مبيع شهري تقديري:** **{r['est_monthly_sales']}**")
@@ -1996,7 +1996,7 @@ with tab14:
             c_img,c_inf=st.columns([1,7])
             with c_img: show_img(r["img"],70)
             with c_inf:
-                st.markdown(f"**ASIN:** `{r['asin']}`")
+                st.markdown(f"**MSKU:** `{r['msku']}`")
                 show_asin_info(r["asin"])
                 y_d=sales_dates[0] if sales_dates else None
                 y_cnt=r["day_counts"].get(y_d,0) if y_d else 0
