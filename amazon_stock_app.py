@@ -1507,8 +1507,18 @@ with tab9:
                 if cl in ("fnsku","fulfillment-channel-sku"): fnsku_c=c
                 if cl in ("msku","seller-sku"): msku_c=c
                 if "warehouse" in cl: wh_c=c
-                if "condition" in cl: cond_c=c
-                if "quantity" in cl and "available" in cl: stock_c=c
+                if "condition" in cl:
+                    cond_c = c
+
+                if cl == "stock":
+                    stock_c = c
+
+                elif "quantity" in cl and "available" in cl:
+                    stock_c = c
+
+                elif "quantity" in cl and not stock_c:
+                    stock_c = c
+                
                 elif "quantity" in cl and not stock_c: stock_c=c
             if not asin_c:
                 for c in df_inv_up.columns:
@@ -1523,8 +1533,17 @@ with tab9:
                 for c in df_inv_up.columns:
                     if "condition" in c.lower(): cond_c=c; break
             if not stock_c:
-                for c in df_inv_up.columns:
-                    if "quantity" in c.lower(): stock_c=c; break
+               for c in df_inv_up.columns:
+                   cl = c.strip().lower()
+
+                   if (
+                       cl == "stock"
+                       or "quantity" in cl
+                       or "available" in cl
+                       or "qty" in cl
+                   ):
+                       stock_c = c
+                       break
             st.info(f"📊 {len(df_inv_up)} صف | ASIN:`{asin_c}` FNSKU:`{fnsku_c}` MSKU:`{msku_c}` Cond:`{cond_c}` Stock:`{stock_c}` WH:`{wh_c}`")
             st.dataframe(df_inv_up.head(10),use_container_width=True,height=150)
 
