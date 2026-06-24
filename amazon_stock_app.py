@@ -78,15 +78,15 @@ sheets = {}
 for tab, headers in TABS_CONFIG.items():
     sheets[tab] = get_or_create_worksheet(tab, headers)
 
-# صفحة الصور — links a (خاصة بأمازون)
+# صفحة الصور — links m (مرتبطة بـ MSKU — خاصة بأمازون)
 def get_or_create_links_ws(retries=5, delay=2):
     for attempt in range(retries):
         try:
-            return ss.worksheet("links a")
+            return ss.worksheet("links m")
         except gspread.exceptions.WorksheetNotFound:
             try:
-                ws = ss.add_worksheet(title="links a", rows="2000", cols="2")
-                ws.append_row(["ASIN", "Image URL"])
+                ws = ss.add_worksheet(title="links m", rows="2000", cols="2")
+                ws.append_row(["MSKU", "Image URL"])
                 return ws
             except gspread.exceptions.APIError as e:
                 if attempt < retries - 1:
@@ -154,6 +154,7 @@ def get_excluded_warehouses():
 # ══ links map ══
 @st.cache_data(ttl=300)
 def get_links_map():
+    """ترجع map من MSKU → Image URL (مبنية على صفحة links m)"""
     data = links_ws.get_all_values()
     m = {}
     for row in data[1:]:
@@ -312,7 +313,7 @@ def merge_or_get_existing_row(sheet, asin):
                 return ri, row
     return None, None
 
-# ══ inv_map ══
+# ══ inv_map — المفتاح الأساسي هو MSKU ══
 def build_inv_map(excluded_wh: set):
     inv_data = get_cached(inventory_sheet)
     inv_map = {}
@@ -322,30 +323,30 @@ def build_inv_map(excluded_wh: set):
         while len(r) < 8: r.append("")
         asin, fnsku, msku, wh, condition, stock_raw, img, date_up = \
             r[0].strip(), r[1].strip(), r[2].strip(), r[3].strip(), r[4].strip(), r[5], r[6], r[7]
-        if not asin:
+        if not msku:
             continue
-        asin_up = asin.upper()
+        msku_up = msku.upper()
         stock   = _to_int(stock_raw)
         wh_key  = f"{wh}|{condition}"
-        if asin_up not in inv_map:
-            inv_map[asin_up] = {
-                "asin": asin, "fnsku": fnsku, "msku": msku,
+        if msku_up not in inv_map:
+            inv_map[msku_up] = {
+                "msku": msku, "asin": asin, "fnsku": fnsku,
                 "img": img, "date": date_up, "sales": 0,
                 "warehouses": {}, "total_stock": 0, "unsellable": 0,
             }
-        inv_map[asin_up]["warehouses"][wh_key] = inv_map[asin_up]["warehouses"].get(wh_key, 0) + stock
+        inv_map[msku_up]["warehouses"][wh_key] = inv_map[msku_up]["warehouses"].get(wh_key, 0) + stock
         if condition.upper() == "SELLABLE" and wh.upper() not in excluded_wh:
-            inv_map[asin_up]["total_stock"] += stock
+            inv_map[msku_up]["total_stock"] += stock
         if condition.upper() == "UNSELLABLE":
-            inv_map[asin_up]["unsellable"]  += stock
-        if not inv_map[asin_up]["img"]   and img:   inv_map[asin_up]["img"]   = img
-        if not inv_map[asin_up]["fnsku"] and fnsku: inv_map[asin_up]["fnsku"] = fnsku
-        if not inv_map[asin_up]["msku"]  and msku:  inv_map[asin_up]["msku"]  = msku
+            inv_map[msku_up]["unsellable"]  += stock
+        if not inv_map[msku_up]["img"]   and img:   inv_map[msku_up]["img"]   = img
+        if not inv_map[msku_up]["asin"]  and asin:  inv_map[msku_up]["asin"]  = asin
+        if not inv_map[msku_up]["fnsku"] and fnsku: inv_map[msku_up]["fnsku"] = fnsku
     return inv_map
 
-# ══ sales maps ══
+# ══ sales maps — المفتاح MSKU ══
 def build_sales_map_monthly():
-    """مبيعات آخر 30 يوم — Event Type Shipments وQty سالب."""
+    """مبيعات آخر 30 يوم — Event Type Shipments وQty سالب — مُفهرسة بـ MSKU."""
     data = get_cached(sales_sheet)
     counts = {}
     if len(data) <= 1:
@@ -353,7 +354,11 @@ def build_sales_map_monthly():
     cutoff = datetime.now() - timedelta(days=30)
     for row in data[1:]:
         while len(row) < 8: row.append("")
-        asin, event_type, qty_raw, date_str = row[0], row[4], row[6], row[7]
+        # AMZ_Sales: ASIN,FNSKU,MSKU,Title,Event Type,Fulfillment Center,Quantity,Date,Date Uploaded
+        msku       = row[2].strip()
+        event_type = row[4].strip()
+        qty_raw    = row[6]
+        date_str   = row[7]
         if event_type.strip().lower() not in ("shipments", "shipment"):
             continue
         qty = _to_int(qty_raw)
@@ -361,11 +366,13 @@ def build_sales_map_monthly():
             continue
         d = parse_excel_date(date_str)
         if d and d >= cutoff:
-            asin_up = asin.strip().upper()
-            counts[asin_up] = counts.get(asin_up, 0) + abs(qty)
+            msku_up = msku.upper()
+            if msku_up:
+                counts[msku_up] = counts.get(msku_up, 0) + abs(qty)
     return counts
 
 def build_daily_sales_counts(dates):
+    """مبيعات يومية — مُفهرسة بـ MSKU."""
     data = get_cached(sales_sheet)
     dates_set = set(dates)
     counts = {}
@@ -373,7 +380,10 @@ def build_daily_sales_counts(dates):
         return counts
     for row in data[1:]:
         while len(row) < 8: row.append("")
-        asin, event_type, qty_raw, date_str = row[0], row[4], row[6], row[7]
+        msku       = row[2].strip()
+        event_type = row[4].strip()
+        qty_raw    = row[6]
+        date_str   = row[7]
         if event_type.strip().lower() not in ("shipments", "shipment"):
             continue
         qty = _to_int(qty_raw)
@@ -381,26 +391,28 @@ def build_daily_sales_counts(dates):
             continue
         d = parse_excel_date(date_str)
         if d and d.date() in dates_set:
-            asin_up = asin.strip().upper()
-            if asin_up not in counts:
-                counts[asin_up] = {dd: 0 for dd in dates}
-            counts[asin_up][d.date()] += abs(qty)
+            msku_up = msku.upper()
+            if msku_up:
+                if msku_up not in counts:
+                    counts[msku_up] = {dd: 0 for dd in dates}
+                counts[msku_up][d.date()] += abs(qty)
     return counts
 
 def compute_missing_inventory_rows(display_dates):
+    """MSKUs موجودة في المبيعات بس مش موجودة في inv_map (مخزون خلص)."""
     multi_counts = build_daily_sales_counts(display_dates)
     lm = get_links_map()
     rows = []
-    for asin_up, day_counts in multi_counts.items():
-        if asin_up in inv_map:
+    for msku_up, day_counts in multi_counts.items():
+        if msku_up in inv_map:
             continue
         total = sum(day_counts.values())
         if total <= 0:
             continue
         est_monthly = round((total / len(display_dates)) * 30)
         rows.append({
-            "asin": asin_up, "asin_up": asin_up,
-            "img": lm.get(asin_up, ""),
+            "msku": msku_up, "msku_up": msku_up,
+            "img": lm.get(msku_up, ""),
             "day_counts": day_counts,
             "total_recent": total,
             "est_monthly_sales": est_monthly,
@@ -518,22 +530,23 @@ def show_img(img, width=75):
     else:
         st.markdown("🖼️")
 
-def show_asin_info(asin: str):
-    info = inv_map.get(asin.strip().upper())
+def show_sku_info(msku: str):
+    """عرض معلومات المنتج بناءً على MSKU (المفتاح الأساسي)."""
+    info = inv_map.get(msku.strip().upper())
     if not info:
         return
     total  = info["total_stock"]
     unsell = info["unsellable"]
     sales  = info["sales"]
+    asin   = info.get("asin", "")
     fnsku  = info.get("fnsku", "")
-    msku   = info.get("msku", "")
     st.markdown(
         f"📈 **مبيع شهري | Monthly Sales:** **{sales}** &nbsp;|&nbsp; "
         f"📦 **SELLABLE:** **{total}**"
         + (f" &nbsp;|&nbsp; ⚠️ **UNSELLABLE:** {unsell}" if unsell > 0 else "")
     )
-    if fnsku or msku:
-        st.caption(f"FNSKU: `{fnsku}` | MSKU: `{msku}`")
+    if asin or fnsku:
+        st.caption(f"ASIN: `{asin}` | FNSKU: `{fnsku}`")
     badges = []
     for wh_cond, stk in sorted(info["warehouses"].items()):
         wh, cond = wh_cond.split("|", 1) if "|" in wh_cond else (wh_cond, "")
@@ -544,6 +557,18 @@ def show_asin_info(asin: str):
         strike = "text-decoration:line-through;" if is_ex else ""
         badges.append(f'<span class="wh-badge" style="background:{bg};color:{color};{strike}">{wh}({cond[:4]}): {stk}</span>')
     st.markdown("🏭 " + "".join(badges), unsafe_allow_html=True)
+
+# دالة backward-compat — لو في أي مكان بيستدعي show_asin_info بـ ASIN، نحوّل لـ MSKU
+def show_asin_info(asin: str):
+    """Backward compat: يبحث عن MSKU المقابل لـ ASIN ثم يعرض المعلومات."""
+    asin_up = asin.strip().upper()
+    # ابحث عن MSKU من inv_map
+    for msku_key, info in inv_map.items():
+        if info.get("asin", "").upper() == asin_up:
+            show_sku_info(msku_key)
+            return
+    # لو ما لقيناش، جرب تعامله كـ MSKU مباشرة
+    show_sku_info(asin)
 
 def confirm_clear(key, sheet, label=""):
     if st.session_state.get(f"amz_confirm_{key}"):
