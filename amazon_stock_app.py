@@ -1643,7 +1643,7 @@ with tab10:
             if tr["asin_up"] not in existing_in_review:
                 avg_tr=tr.get("effective_avg",0)
                 review_rows.append({
-                    "asin":tr["asin"],"asin_up":tr["asin_up"],"stock":tr["stock"],
+                    "asin":tr["msku"],"asin_up":tr["asin_up"],"stock":tr["stock"],
                     "sales_month":tr["sales_month"],"img":tr["img"],
                     "days_to_stockout":tr.get("days_to_stockout",0),
                     "suggested_qty":round(avg_tr*18) if avg_tr>0 else 0,
@@ -1654,7 +1654,7 @@ with tab10:
         if not review_rows:
             st.success("✅ لا توجد ASINs محتاجة مراجعة | No ASINs need stock review")
         else:
-            df_sr2=pd.DataFrame([{"ASIN":r["asin"],"Yesterday":r["day_counts"].get(d1_sr,0),
+            df_sr2=pd.DataFrame([{"ASIN":r["msku"],"Yesterday":r["day_counts"].get(d1_sr,0),
                 "Day Before":r["day_counts"].get(d2_sr,0),"3 Days":r["day_counts"].get(d3_sr,0),
                 "Stock":r["stock"],"Monthly Sales":r["sales_month"],
                 "Suggested Qty":r["suggested_qty"],"Days to Stockout":r["days_to_stockout"]} for r in review_rows])
@@ -1665,16 +1665,16 @@ with tab10:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],70)
                 with c_inf:
-                    st.markdown(f"**ASIN:** `{r['asin']}`")
+                    st.markdown(f"**MSKU:** `{r['msku']}`")
                     if r.get("_transferred"):
                         st.markdown('<span style="background:#7c3aed;color:white;border-radius:6px;padding:2px 10px;font-size:11px;">📌 مرحّل من تاب المبيعات — محتاج جدولة</span>',unsafe_allow_html=True)
                     st.markdown(f"📦 **مخزون:** {r['stock']} | 📈 **شهري:** {r['sales_month']}")
                     st.markdown("🛒 "+render_day_counts_md(r["day_counts"],day_dates_sr,day_labels_sr))
                     st.markdown(f"💡 **كمية مقترحة:** **{r['suggested_qty']}** | ⏳ **نفاد خلال:** {r['days_to_stockout']} يوم")
-                    badge_text,badge_color,_=schedule_coverage_badge(r["asin"],r["days_to_stockout"],delay_sr)
+                    badge_text,badge_color,_=schedule_coverage_badge(r["msku"],r["days_to_stockout"],delay_sr)
                     st.markdown(f'<span style="background:{badge_color};color:white;border-radius:6px;padding:3px 10px;font-size:12px;">{badge_text}</span>',unsafe_allow_html=True)
-                    render_recent_expired_note(r["asin"])
-                    for note in get_unavailable_ordered_note(r["asin"]): st.caption(note)
+                    render_recent_expired_note(r["msku"])
+                    for note in get_unavailable_ordered_note(r["msku"]): st.caption(note)
                 st.divider()
         st.divider()
         st.subheader("⛔ مخزون منتهي بالكامل | Completely Out of Stock")
@@ -1696,10 +1696,10 @@ with tab10:
                     st.error("⛔ مخزونه انتهى — مش موجود في ملف المخزون")
                     st.markdown("🛒 "+render_day_counts_md(r["day_counts"],day_dates_sr,day_labels_sr))
                     st.markdown(f"📈 **مبيع شهري تقديري:** **{r['est_monthly_sales']}**")
-                    badge_text,badge_color,_=schedule_coverage_badge(r["asin"],0,delay_sr)
+                    badge_text,badge_color,_=schedule_coverage_badge(r["msku"],0,delay_sr)
                     st.markdown(f'<span style="background:{badge_color};color:white;border-radius:6px;padding:3px 10px;font-size:12px;">{badge_text}</span>',unsafe_allow_html=True)
-                    render_recent_expired_note(r["asin"])
-                    for note in get_unavailable_ordered_note(r["asin"]): st.caption(note)
+                    render_recent_expired_note(r["msku"])
+                    for note in get_unavailable_ordered_note(r["msku"]): st.caption(note)
                 st.divider()
 
 # ══ TAB 11 — منتهية ══
@@ -1823,7 +1823,7 @@ with tab13:
         if not sales_review_rows:
             st.success("✅ لا توجد ASINs محتاجة مراجعة مبيعات | No ASINs need sales review")
         else:
-            df_sales_rv=pd.DataFrame([{"ASIN":r["asin"],"Yesterday":r["day_counts"].get(e1,0),
+            df_sales_rv=pd.DataFrame([{"ASIN":r["msku"],"Yesterday":r["day_counts"].get(e1,0),
                 "Day Before":r["day_counts"].get(e2,0),"3 Days":r["day_counts"].get(e3,0),
                 "Stock":r["stock"],"Monthly Sales":r["sales_month"],
                 "Days to Stockout Today Rate":r["days_to_stockout_today"]} for r in sales_review_rows])
@@ -1838,10 +1838,10 @@ with tab13:
                     st.markdown(f"📦 **مخزون:** {r['stock']} | 📈 **شهري:** {r['sales_month']}")
                     st.markdown("🛒 "+render_day_counts_md(r["day_counts"],day_dates_rv,day_labels_rv))
                     st.markdown(f"⚡ **نفاد خلال (بيع اليوم):** {r['days_to_stockout_today']} يوم")
-                    badge_text,badge_color,_=schedule_coverage_badge(r["asin"],r["days_to_stockout"],delay_rv)
+                    badge_text,badge_color,_=schedule_coverage_badge(r["msku"],r["days_to_stockout"],delay_rv)
                     st.markdown(f'<span style="background:{badge_color};color:white;border-radius:6px;padding:3px 10px;font-size:12px;">{badge_text}</span>',unsafe_allow_html=True)
-                    render_recent_expired_note(r["asin"])
-                    for note in get_unavailable_ordered_note(r["asin"]): st.caption(note)
+                    render_recent_expired_note(r["msku"])
+                    for note in get_unavailable_ordered_note(r["msku"]): st.caption(note)
                 st.divider()
         st.divider()
         st.subheader("⛔ مخزون منتهي بالكامل | Completely Out of Stock")
@@ -1849,7 +1849,7 @@ with tab13:
         if not missing_rv:
             st.success("✅ لا يوجد ASINs خارجة عن المخزون")
         else:
-            df_miss_rv=pd.DataFrame([{"ASIN":r["asin"],"Yesterday":r["day_counts"].get(e1,0),
+            df_miss_rv=pd.DataFrame([{"ASIN":r["msku"],"Yesterday":r["day_counts"].get(e1,0),
                 "Day Before":r["day_counts"].get(e2,0),"3 Days":r["day_counts"].get(e3,0),
                 "Estimated Monthly Sales":r["est_monthly_sales"]} for r in missing_rv])
             c1,c2=st.columns(2)
@@ -1863,10 +1863,10 @@ with tab13:
                     st.error("⛔ مخزونه انتهى — مش موجود في ملف المخزون")
                     st.markdown("🛒 "+render_day_counts_md(r["day_counts"],day_dates_rv,day_labels_rv))
                     st.markdown(f"📈 **مبيع شهري تقديري:** **{r['est_monthly_sales']}**")
-                    badge_text,badge_color,_=schedule_coverage_badge(r["asin"],0,delay_rv)
+                    badge_text,badge_color,_=schedule_coverage_badge(r["msku"],0,delay_rv)
                     st.markdown(f'<span style="background:{badge_color};color:white;border-radius:6px;padding:3px 10px;font-size:12px;">{badge_text}</span>',unsafe_allow_html=True)
-                    render_recent_expired_note(r["asin"])
-                    for note in get_unavailable_ordered_note(r["asin"]): st.caption(note)
+                    render_recent_expired_note(r["msku"])
+                    for note in get_unavailable_ordered_note(r["msku"]): st.caption(note)
                 st.divider()
 
 # ══ TAB 14 — المبيعات ══
@@ -1986,7 +1986,7 @@ with tab14:
 
         if sales_tab_rows:
             df_t14=pd.DataFrame([
-                {"ASIN":r["asin"],**{sales_labels[i]:r["day_counts"].get(d,0) for i,d in enumerate(sales_dates)},
+                {"ASIN":r["msku"],**{sales_labels[i]:r["day_counts"].get(d,0) for i,d in enumerate(sales_dates)},
                  "مخزون":r["stock"],"مبيع شهري":r["sales_month"]} for r in sales_tab_rows])
             c1,c2=st.columns(2)
             with c1: dl_btn(df_t14,"amz_sales_daily",key="amz_dlbtn_t14")
@@ -1997,7 +1997,7 @@ with tab14:
             with c_img: show_img(r["img"],70)
             with c_inf:
                 st.markdown(f"**MSKU:** `{r['msku']}`")
-                show_asin_info(r["asin"])
+                show_asin_info(r["msku"])
                 y_d=sales_dates[0] if sales_dates else None
                 y_cnt=r["day_counts"].get(y_d,0) if y_d else 0
                 bg_y="#14532d" if y_cnt>0 else "#7f1d1d"
@@ -2015,9 +2015,9 @@ with tab14:
                 if other_parts: st.markdown(" &nbsp;|&nbsp; ".join(other_parts),unsafe_allow_html=True)
                 days_so_disp=r["days_to_stockout"] if r["days_to_stockout"]<9999 else "—"
                 st.markdown(f"📦 **مخزون:** {r['stock']} | 📈 **شهري:** {r['sales_month']} | 📊 **يومي:** {r['effective_avg']:.1f} | ⏳ **نفاد خلال:** {days_so_disp} يوم")
-                badge_text,badge_color,sched=schedule_coverage_badge(r["asin"],r["days_to_stockout"],delay_t14)
+                badge_text,badge_color,sched=schedule_coverage_badge(r["msku"],r["days_to_stockout"],delay_t14)
                 stock_ok=r["days_to_stockout"]>=cov_t14 if r["effective_avg"]>0 else False
-                un_notes=get_unavailable_ordered_note(r["asin"])
+                un_notes=get_unavailable_ordered_note(r["msku"])
                 if stock_ok and not sched:
                     cov_text=f"✅ مخزون كافٍ ({r['days_to_stockout']} يوم) — لا يحتاج جدولة الآن"
                     cov_color="#15803d"
@@ -2031,7 +2031,7 @@ with tab14:
                 is_needs_sched_only=(not stock_ok and "محتاج جدولة" in badge_text and not sched and not un_notes)
                 if is_needs_sched_only:
                     _new_transferred.append({
-                        "asin":r["asin"],"asin_up":r["asin_up"],"stock":r["stock"],
+                        "asin":r["msku"],"asin_up":r["asin_up"],"stock":r["stock"],
                         "sales_month":r["sales_month"],"img":r["img"],
                         "effective_avg":r["effective_avg"],"days_to_stockout":r["days_to_stockout"],
                         "day_counts":r["day_counts"],
@@ -2039,7 +2039,7 @@ with tab14:
                     st.caption("📌 مرحّل لتاب مراجعة المخزون | Transferred to Stock Review tab")
                 if un_notes:
                     for note in un_notes: st.caption(note)
-                render_recent_expired_note(r["asin"])
+                render_recent_expired_note(r["msku"])
             st.divider()
         st.session_state["amz_transferred_skus"]=_new_transferred
 
@@ -2248,7 +2248,7 @@ with tab16:
             if not rows:
                 st.success(f"✅ لا يوجد ASINs بدون مبيعات في {period_label}")
                 return
-            df_ns=pd.DataFrame([{"ASIN":r["asin"],"مخزون | Stock":r["stock"],"مبيع شهري | Monthly Sales":r["sales_month"]} for r in rows])
+            df_ns=pd.DataFrame([{"ASIN":r["msku"],"مخزون | Stock":r["stock"],"مبيع شهري | Monthly Sales":r["sales_month"]} for r in rows])
             c1,c2=st.columns(2)
             with c1: dl_btn(df_ns,dl_key,key=f"amz_dlbtn_{dl_key}")
             with c2: st.warning(f"⚠️ {len(rows)} ASIN بدون مبيعات")
@@ -2257,13 +2257,13 @@ with tab16:
                 c_img,c_inf=st.columns([1,6])
                 with c_img: show_img(r["img"],60)
                 with c_inf:
-                    st.markdown(f"**ASIN:** `{r['asin']}`")
+                    
                     st.markdown(f"📦 **مخزون:** {r['stock']} | 📈 **شهري:** {r['sales_month']}")
-                    sched_ns=get_latest_schedule_info(r["asin"])
+                    sched_ns=get_latest_schedule_info(r["msku"])
                     if sched_ns:
                         arr_ns=(sched_ns["parsed"]+timedelta(days=delay_ns)).date() if sched_ns.get("parsed") else None
                         st.caption(f"📅 ASN {sched_ns['asn']} بتاريخ {sched_ns['date']}"+(f" — وصول: {arr_ns}" if arr_ns else ""))
-                    for note in get_unavailable_ordered_note(r["asin"]): st.caption(note)
+                    for note in get_unavailable_ordered_note(r["msku"]): st.caption(note)
                 st.divider()
 
         sub1,sub2,sub3=st.tabs([
