@@ -45,61 +45,55 @@ TABS_CONFIG = {
     "AMZ_Settings":    ["Key","Value"],
 }
 
-def get_or_create_worksheet(tab, headers, retries=5, delay=2):
+def _init_worksheets_batch(tabs_config, extra_titles, retries=5, delay=3):
+    """
+    يجيب كل الأوراق الموجودة بطلب API واحد (ss.worksheets())،
+    ثم ينشئ الناقصة فقط — بدل API call لكل ورقة.
+    """
     for attempt in range(retries):
         try:
-            ws = ss.worksheet(tab)
+            existing_ws = {ws.title: ws for ws in ss.worksheets()}
+            break
+        except gspread.exceptions.APIError as e:
+            if attempt < retries - 1:
+                time.sleep(delay * (2 ** attempt))
+            else:
+                raise e
+
+    result = {}
+
+    # إنشاء الأوراق الناقصة فقط
+    needed = list(tabs_config.keys()) + extra_titles
+    missing_titles = [t for t in needed if t not in existing_ws]
+
+    for title in missing_titles:
+        for attempt in range(retries):
             try:
-                existing_hdr = ws.row_values(1)
-                missing = [h for h in headers if h not in existing_hdr]
-                if missing:
-                    for h in missing:
-                        ws.append_cols([[h]], value_input_option="RAW")
-            except Exception:
-                pass
-            return ws
-        except gspread.exceptions.WorksheetNotFound:
-            try:
-                ws = ss.add_worksheet(title=tab, rows="3000", cols="15")
+                headers = tabs_config.get(title, ["MSKU", "Image URL"])
+                rows = "2000" if title in ("links m",) else "3000"
+                cols = "2"    if title in ("links m",) else "15"
+                ws = ss.add_worksheet(title=title, rows=rows, cols=cols)
                 ws.append_row(headers)
-                return ws
+                existing_ws[title] = ws
+                time.sleep(0.3)   # انتظر بعد كل إنشاء
+                break
             except gspread.exceptions.APIError as e:
                 if attempt < retries - 1:
                     time.sleep(delay * (2 ** attempt))
                 else:
                     raise e
-        except gspread.exceptions.APIError as e:
-            if attempt < retries - 1:
-                time.sleep(delay * (2 ** attempt))
-            else:
-                raise e
 
-sheets = {}
-for tab, headers in TABS_CONFIG.items():
-    sheets[tab] = get_or_create_worksheet(tab, headers)
+    for tab in tabs_config:
+        result[tab] = existing_ws[tab]
 
-# صفحة الصور — links a (خاصة بأمازون)
-def get_or_create_links_ws(retries=5, delay=2):
-    for attempt in range(retries):
-        try:
-            return ss.worksheet("links m")
-        except gspread.exceptions.WorksheetNotFound:
-            try:
-                ws = ss.add_worksheet(title="links m", rows="2000", cols="2")
-                ws.append_row(["MSKU", "Image URL"])
-                return ws
-            except gspread.exceptions.APIError as e:
-                if attempt < retries - 1:
-                    time.sleep(delay * (2 ** attempt))
-                else:
-                    raise e
-        except gspread.exceptions.APIError as e:
-            if attempt < retries - 1:
-                time.sleep(delay * (2 ** attempt))
-            else:
-                raise e
+    links_ws_ref = existing_ws.get("links m")
+    return result, links_ws_ref
 
-links_ws = get_or_create_links_ws()
+
+sheets, links_ws = _init_worksheets_batch(
+    TABS_CONFIG,
+    extra_titles=["links m"],
+)
 
 requests_sheet     = sheets["AMZ_Requests"]
 approved_sheet     = sheets["AMZ_Approved"]
@@ -128,8 +122,8 @@ def clear_cache(sheet):
 
 def _preload_all_caches():
     """
-    يقرأ كل الصفحات الثابتة مرة واحدة عند أول تشغيل (batch load).
-    يقلل API calls من ~12 طلب لـ 1-2 طلب فقط.
+    يقرأ كل الصفحات مرة واحدة عند التشغيل.
+    كل ورقة مش محملة → API call واحد مع 60ms بينهم لتجنب 429.
     """
     sheets_to_preload = [
         inventory_sheet, sales_sheet, settings_sheet,
@@ -140,16 +134,18 @@ def _preload_all_caches():
     for sh in sheets_to_preload:
         key = f"amz_cache_{sh.title}"
         if key not in st.session_state:
-            try:
-                st.session_state[key] = sh.get_all_values()
-                time.sleep(0.05)   # 50ms بين الطلبات لتجنب 429
-            except gspread.exceptions.APIError as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    time.sleep(2)
-                    try:
-                        st.session_state[key] = sh.get_all_values()
-                    except Exception:
-                        pass
+            for attempt in range(4):
+                try:
+                    st.session_state[key] = sh.get_all_values()
+                    time.sleep(0.06)   # 60ms بين كل قراءة
+                    break
+                except gspread.exceptions.APIError as e:
+                    if "429" in str(e) or "quota" in str(e).lower():
+                        time.sleep(3 * (2 ** attempt))
+                    else:
+                        break
+                except Exception:
+                    break
 
 # ══ إعدادات ══
 def load_settings():
@@ -320,17 +316,20 @@ def safe_batch_append(sheet, rows_data, retries=5, delay=1):
 
 def safe_update_row(sheet, row_idx, values, retries=4, delay=1):
     """يحدّث صف كامل بطلب API واحد بدل cell-by-cell."""
-    from gspread.utils import rowcol_to_a1
-    end_col = rowcol_to_a1(row_idx, len(values)).split(str(row_idx))[0]
-    range_str = f"A{row_idx}:{end_col}{row_idx}"
-    for _ in range(retries):
+    try:
+        from gspread.utils import rowcol_to_a1
+        end_col_letter = rowcol_to_a1(1, len(values))[:-1]  # get col letter only
+        range_str = f"A{row_idx}:{end_col_letter}{row_idx}"
+    except Exception:
+        range_str = f"A{row_idx}"
+    for attempt in range(retries):
         try:
             sheet.update(range_str, [values])
             clear_cache(sheet)
             return True
         except gspread.exceptions.APIError as e:
             if "429" in str(e) or "quota" in str(e).lower():
-                time.sleep(delay * 2)
+                time.sleep(delay * (2 ** attempt))
             else:
                 time.sleep(delay)
         except Exception:
@@ -366,24 +365,20 @@ def resolve_identifiers(msku_raw, asin_raw, fnsku_raw, links_map_ref):
     لو ASIN أو FNSKU بس → يحوّل لـ MSKU من inv_map ثم يكمل.
     """
     asin_to_msku, fnsku_to_msku = _build_lookup_indexes()
-
-    msku  = msku_raw.strip()  if msku_raw  else ""
-    asin  = asin_raw.strip()  if asin_raw  else ""
-    fnsku = fnsku_raw.strip() if fnsku_raw else ""
-
-    # --- حاول تعرف MSKU ---
+    msku  = (msku_raw  or "").strip()
+    asin  = (asin_raw  or "").strip()
+    fnsku = (fnsku_raw or "").strip()
+    # حاول تعرف MSKU من ASIN أو FNSKU
     if not msku:
         if asin and asin.upper() in asin_to_msku:
             msku = asin_to_msku[asin.upper()]
         elif fnsku and fnsku.upper() in fnsku_to_msku:
             msku = fnsku_to_msku[fnsku.upper()]
-
-    # --- لو لقينا MSKU، شبك الباقي من inv_map ---
+    # لو لقينا MSKU، شبك الباقي من inv_map
     info = inv_map.get(msku.upper(), {}) if msku else {}
     if info:
         if not asin:  asin  = info.get("asin",  "")
         if not fnsku: fnsku = info.get("fnsku", "")
-
     img = links_map_ref.get(msku.upper(), "") if msku else ""
     return msku, asin, fnsku, img
 
@@ -576,13 +571,12 @@ _today_key = f"amz_expired_checked_{datetime.now().date()}"
 if _today_key not in st.session_state:
     for _old in [k for k in st.session_state if k.startswith("amz_expired_checked_") and k != _today_key]:
         del st.session_state[_old]
-    # batch load كل الصفحات قبل أي عملية (يقلل API calls)
-    _preload_all_caches()
+    _preload_all_caches()   # batch read كل الصفحات مرة واحدة
     check_expired_scheduled()
     st.session_state[_today_key] = True
 else:
-    # في كل run — preload الصفحات اللي مش متحملة بعد
-    _preload_all_caches()
+    _preload_all_caches()   # يحمّل الصفحات اللي ناقصة بس (الموجودة في كاش تتجاهل)
+
 
 if "amz_cancel_notifs_loaded" not in st.session_state:
     st.session_state["amz_cancel_notifs"] = load_cancel_notifications()
@@ -857,7 +851,7 @@ with tab1:
     with col_m:
         method = st.radio("طريقة الإضافة | Add Method:", ["📂 رفع ملف | Upload","✏️ لصق | Paste"], horizontal=True)
 
-    st.caption("💡 يكفي تملأ أي عمود واحد: **MSKU** أو **ASIN** أو **FNSKU** — الباقي بيتشبك تلقائياً من المخزون")
+    st.caption("💡 يكفي عمود واحد: **MSKU** أو **ASIN** أو **FNSKU** — الباقي بيتشبك تلقائياً من المخزون")
 
     added_rows, file_name_label = [], ""
     if "Upload" in method:
@@ -887,10 +881,9 @@ with tab1:
                     if not any([msku_raw, asin_raw, fnsku_raw]):
                         continue
                     msku, asin, fnsku, img = resolve_identifiers(msku_raw, asin_raw, fnsku_raw, links_map)
-                    if msku or asin_raw or fnsku_raw:  # قبول حتى لو MSKU ما اتشبكش
-                        final_msku = msku or msku_raw or asin_raw or fnsku_raw
-                        added_rows.append((final_msku, asin, fnsku, qty, img))
-                        resolved_preview.append({"MSKU":final_msku,"ASIN":asin,"FNSKU":fnsku,"Qty":qty,"Img✓":"✅" if img else "—"})
+                    final_msku = msku or msku_raw or asin_raw or fnsku_raw
+                    added_rows.append((final_msku, asin, fnsku, qty, img))
+                    resolved_preview.append({"MSKU":final_msku,"ASIN":asin,"FNSKU":fnsku,"Qty":qty,"Img✓":"✅" if img else "—"})
 
                 if resolved_preview:
                     st.markdown("**🔗 نتيجة الشبك | Resolved:**")
@@ -899,7 +892,7 @@ with tab1:
             except Exception as e:
                 st.error(f"❌ {e}")
     else:
-        st.caption("اكتب MSKU أو ASIN أو FNSKU — واحد يكفي في كل سطر (مع الكمية اختياري)")
+        st.caption("اكتب MSKU أو ASIN أو FNSKU — واحد في كل سطر (مع الكمية اختياري)")
         pasted = st.text_area("الصق هنا | Paste here:", height=110,
             placeholder="MSKU,Qty\n75-DMSV-3LFW,5\nB0BH1F3JHV,3\nX002AMJX6V,2")
         file_name_label = "Manual Entry"
@@ -910,13 +903,12 @@ with tab1:
                 raw   = parts[0] if parts else ""
                 qty   = parts[1] if len(parts) > 1 else ""
                 if not raw or raw.lower() in ("msku","asin","fnsku",""): continue
-                # خمّن نوع المعرّف
                 raw_up = raw.upper()
-                if raw_up.startswith("B0") and len(raw_up) == 10:          # ASIN نمط أمازون
+                if raw_up.startswith("B0") and len(raw_up) == 10:
                     msku, asin, fnsku, img = resolve_identifiers("", raw, "", links_map)
-                elif raw_up.startswith("X00") and len(raw_up) >= 10:       # FNSKU نمط أمازون
+                elif raw_up.startswith("X00") and len(raw_up) >= 10:
                     msku, asin, fnsku, img = resolve_identifiers("", "", raw, links_map)
-                else:                                                        # MSKU
+                else:
                     msku, asin, fnsku, img = resolve_identifiers(raw, "", "", links_map)
                 final_msku = msku or raw
                 added_rows.append((final_msku, asin, fnsku, qty, img))
@@ -1176,7 +1168,7 @@ with tab5:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True)
 
-    st.caption("💡 يكفي تملأ **MSKU** أو **ASIN** أو **FNSKU** — الباقي يتشبك تلقائياً")
+    st.caption("💡 يكفي عمود واحد: **MSKU** أو **ASIN** أو **FNSKU** — الباقي يتشبك تلقائياً")
 
     upl_sc=st.file_uploader("ارفع ملف الجدولة | Upload Schedule File",type=["xlsx","xls","csv"],key="amz_sched_upload")
     if upl_sc:
@@ -1186,12 +1178,12 @@ with tab5:
             cm={}
             for c in df_sc.columns:
                 cl=c.strip().lower()
-                if cl=="asn":                                          cm["asn"]  =c
-                if cl in ("msku","seller-sku","seller sku"):           cm["msku"] =c
-                if cl=="asin":                                         cm["asin"] =c
-                if cl in ("fnsku","fulfillment-channel-sku"):          cm["fnsku"]=c
-                if cl in ("qty","quantity","كمية"):                    cm["qty"]  =c
-                if "جدول" in cl or "schedule" in cl or cl=="date":    cm["date"] =c
+                if cl=="asn":                                         cm["asn"]  =c
+                if cl in ("msku","seller-sku","seller sku"):          cm["msku"] =c
+                if cl=="asin":                                        cm["asin"] =c
+                if cl in ("fnsku","fulfillment-channel-sku"):         cm["fnsku"]=c
+                if cl in ("qty","quantity","كمية"):                   cm["qty"]  =c
+                if "جدول" in cl or "schedule" in cl or cl=="date":   cm["date"] =c
             asn_c  = cm.get("asn")
             msku_c = cm.get("msku")
             asin_c = cm.get("asin")
@@ -1202,19 +1194,16 @@ with tab5:
             st.info(f"📊 {len(df_sc)} صف | ASN:`{asn_c}` MSKU:`{msku_c}` ASIN:`{asin_c}` FNSKU:`{fnsk_c}` Qty:`{qty_c}` Date:`{date_c}`")
             st.dataframe(df_sc, use_container_width=True, height=150)
 
-            # ── تاريخ جدولة افتراضي لو مش موجود في الملف ──
+            # تاريخ افتراضي لو الملف مفيهوش
             col_da, col_db = st.columns([2,3])
             with col_da:
                 fallback_date = st.date_input(
-                    "📅 تاريخ الجدولة الافتراضي | Default Schedule Date",
+                    "📅 تاريخ الجدولة الافتراضي (لو مفيش تاريخ في الملف)",
                     value=datetime.now().date() + timedelta(days=3),
-                    key="amz_sched_fallback_date",
-                    help="يُستخدم فقط للصفوف التي ليس فيها تاريخ في الملف"
-                )
+                    key="amz_sched_fallback_date")
             with col_db:
-                st.markdown("")
-                st.markdown("")
-                st.caption("← يُطبَّق على الصفوف التي ليس فيها تاريخ في الملف")
+                st.markdown(""); st.markdown("")
+                st.caption("← يُطبَّق فقط على الصفوف التي لا تحتوي تاريخاً")
 
             if st.button("📤 إضافة الجدولة | Add Schedule", type="primary"):
                 existing=get_cached(scheduled_sheet, force=True)
@@ -1224,40 +1213,26 @@ with tab5:
                         while len(r)<2: r.append("")
                         ex_pairs.add((r[0].strip().upper(), r[1].strip().upper()))
                 dn=now_str(); to_add=[]; skipped=0; resolved_log=[]
-
                 for _, row in df_sc.iterrows():
-                    asn   = str(row[asn_c]).strip()   if asn_c  and str(row[asn_c]).strip()  not in ("","nan") else ""
-                    msku_raw= str(row[msku_c]).strip() if msku_c and str(row[msku_c]).strip() not in ("","nan") else ""
-                    asin_raw= str(row[asin_c]).strip() if asin_c and str(row[asin_c]).strip() not in ("","nan") else ""
-                    fnsk_raw= str(row[fnsk_c]).strip() if fnsk_c and str(row[fnsk_c]).strip() not in ("","nan") else ""
-                    qty     = str(row[qty_c]).strip()  if qty_c  and str(row[qty_c]).strip()  not in ("","nan") else ""
-                    dval    = str(row[date_c]).strip()  if date_c and str(row[date_c]).strip() not in ("","nan") else ""
-
+                    asn     = str(row[asn_c]).strip()    if asn_c  and str(row[asn_c]).strip()   not in ("","nan") else ""
+                    msku_raw= str(row[msku_c]).strip()   if msku_c and str(row[msku_c]).strip()  not in ("","nan") else ""
+                    asin_raw= str(row[asin_c]).strip()   if asin_c and str(row[asin_c]).strip()  not in ("","nan") else ""
+                    fnsk_raw= str(row[fnsk_c]).strip()   if fnsk_c and str(row[fnsk_c]).strip()  not in ("","nan") else ""
+                    qty     = str(row[qty_c]).strip()    if qty_c  and str(row[qty_c]).strip()   not in ("","nan") else ""
+                    dval    = str(row[date_c]).strip()   if date_c and str(row[date_c]).strip()  not in ("","nan") else ""
                     if not any([msku_raw, asin_raw, fnsk_raw]):
                         continue
-
-                    # شبك
                     msku, asin, fnsku, img = resolve_identifiers(msku_raw, asin_raw, fnsk_raw, links_map)
                     final_msku = msku or msku_raw or asin_raw or fnsk_raw
-
-                    # تاريخ: من الملف أو الافتراضي
                     pd_ = parse_excel_date(dval)
-                    if pd_:
-                        ds = pd_.strftime("%Y-%m-%d")
-                    else:
-                        ds = fallback_date.strftime("%Y-%m-%d")
-
-                    pair=(asn.upper(), final_msku.upper()) if asn else ("", final_msku.upper())
-                    if not asn:
-                        # لو مفيش ASN نضيفه بدونه
-                        to_add.append(["", final_msku, asin, fnsku, qty, ds, img, dn, "", ""])
-                    elif pair in ex_pairs:
-                        skipped+=1
+                    ds  = pd_.strftime("%Y-%m-%d") if pd_ else fallback_date.strftime("%Y-%m-%d")
+                    pair = (asn.upper(), final_msku.upper())
+                    if pair in ex_pairs:
+                        skipped += 1
                     else:
                         to_add.append([asn, final_msku, asin, fnsku, qty, ds, img, dn, "", ""])
-                        ex_pairs.add(pair)
+                        if asn: ex_pairs.add(pair)
                     resolved_log.append({"ASN":asn,"MSKU":final_msku,"ASIN":asin,"FNSKU":fnsku,"Qty":qty,"Date":ds,"Img✓":"✅" if img else "—"})
-
                 safe_batch_append(scheduled_sheet, to_add)
                 msg=f"✅ أُضيف | Added: {len(to_add)}"
                 if skipped: msg+=f" | ⚠️ مكرر: {skipped}"
@@ -1268,20 +1243,15 @@ with tab5:
         except Exception as e:
             st.error(f"❌ {e}")
 
-    st.divider()
-
-    # ── إضافة جدولة يدوية سريعة ──
+    # ── إضافة يدوية سريعة ──
     with st.expander("✏️ إضافة جدولة يدوية | Quick Manual Entry", expanded=False):
         st.caption("أدخل MSKU أو ASIN أو FNSKU — واحد يكفي")
         mc1,mc2,mc3 = st.columns(3)
-        with mc1:
-            man_id  = st.text_input("MSKU / ASIN / FNSKU", key="amz_man_id", placeholder="75-DMSV-3LFW")
-        with mc2:
-            man_qty = st.text_input("الكمية | Qty", key="amz_man_qty", placeholder="10")
-        with mc3:
-            man_date= st.date_input("تاريخ الجدولة", value=datetime.now().date()+timedelta(days=3), key="amz_man_date")
+        with mc1: man_id   = st.text_input("MSKU / ASIN / FNSKU", key="amz_man_id", placeholder="75-DMSV-3LFW")
+        with mc2: man_qty  = st.text_input("الكمية | Qty", key="amz_man_qty", placeholder="10")
+        with mc3: man_date = st.date_input("تاريخ الجدولة", value=datetime.now().date()+timedelta(days=3), key="amz_man_date")
         man_asn = st.text_input("ASN (اختياري)", key="amz_man_asn", placeholder="FBA123456")
-        if st.button("➕ أضف للجدولة | Add", key="amz_man_add", type="secondary"):
+        if st.button("➕ أضف | Add", key="amz_man_add", type="secondary"):
             if man_id.strip():
                 rid = man_id.strip().upper()
                 if rid.startswith("B0") and len(rid)==10:
@@ -1291,13 +1261,14 @@ with tab5:
                 else:
                     msku_m,asin_m,fnsku_m,img_m = resolve_identifiers(man_id.strip(),"","",links_map)
                 final_m = msku_m or man_id.strip()
-                ds_m = man_date.strftime("%Y-%m-%d")
-                safe_append(scheduled_sheet,[man_asn.strip(),final_m,asin_m,fnsku_m,man_qty.strip(),ds_m,img_m,now_str(),"",""])
-                st.success(f"✅ أُضيف: MSKU={final_m} | ASN={man_asn.strip() or '—'} | Date={ds_m}")
+                safe_append(scheduled_sheet,[man_asn.strip(),final_m,asin_m,fnsku_m,man_qty.strip(),
+                    man_date.strftime("%Y-%m-%d"),img_m,now_str(),"",""])
+                st.success(f"✅ أُضيف: MSKU={final_m} | Date={man_date.strftime('%Y-%m-%d')}")
                 st.rerun()
             else:
-                st.warning("أدخل MSKU أو ASIN أو FNSKU أولاً")
+                st.warning("أدخل MSKU أو ASIN أو FNSKU")
 
+    st.divider()
     st.subheader("📋 الجدولة الحالية | Current Schedule")
     data_sch=get_cached(scheduled_sheet)
     if len(data_sch)<=1:
