@@ -1224,7 +1224,7 @@ with tab5:
                         continue
                     msku, asin, fnsku, _ = resolve_identifiers(msku_raw, asin_raw, fnsk_raw, links_map)
 
-img = links_map.get(msku.upper(), "") if msku else ""
+                    img = links_map.get(msku.upper(), "") if msku else ""
                     final_msku = msku or msku_raw or asin_raw or fnsk_raw
                     pd_ = parse_excel_date(dval)
                     ds  = pd_.strftime("%Y-%m-%d") if pd_ else fallback_date.strftime("%Y-%m-%d")
