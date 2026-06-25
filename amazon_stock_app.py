@@ -1704,7 +1704,7 @@ with tab9:
                     wh    =str(row[wh_c]).strip()    if wh_c    else "FBA"
                     cond  =str(row[cond_c]).strip()  if cond_c  else "SELLABLE"
                     stk   =str(row[stock_c]).strip() if stock_c else "0"
-                    img   =links_map.get(asin.upper(),"")
+                    img   =links_map.get(msku.upper(),"")
                     if asin and asin.lower()!="nan":
                         to_add.append([asin,fnsku,msku,wh,cond,stk,img,dn])
                 if replace: safe_delete_all(inventory_sheet)
