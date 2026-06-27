@@ -204,20 +204,43 @@ def get_z_to_msku_map():
 
 def resolve_msku_for_info(msku: str) -> str:
     """
-    يحاول يجيب الـ MSKU الصحيح الموجود في inv_map:
-    1) لو موجود مباشرة → يرجعه
-    2) لو مش موجود، يدور بـ z_to_msku_map (Z → MSKU)
-    3) لو مش لاقي → يرجع الأصلي
+    يحاول يجيب الـ MSKU الصحيح الموجود في inv_map بكل الطرق:
+    1) مباشرة بالـ MSKU
+    2) عن طريق z_to_msku_map (Z/B0 → MSKU الحقيقي)
+    3) عن طريق ASIN أو FNSKU في inv_map (cross-lookup)
+    4) لو مش لاقي → يرجع الأصلي
     """
     if not msku:
         return msku
     msku_up = msku.strip().upper()
+
+    # 1) موجود مباشرة
     if msku_up in inv_map:
         return msku.strip()
+
+    # 2) عن طريق z_map (B عمود → A عمود)
     z_map = get_z_to_msku_map()
     real_msku = z_map.get(msku_up, "")
     if real_msku and real_msku.upper() in inv_map:
         return real_msku
+
+    # 3) دور في inv_map بالـ ASIN أو FNSKU
+    #    (بعض المنتجات MSKU في الجدولة = ASIN أو FNSKU في الـ inventory)
+    for inv_msku_up, info in inv_map.items():
+        asin_inv  = info.get("asin",  "").strip().upper()
+        fnsku_inv = info.get("fnsku", "").strip().upper()
+        if msku_up == asin_inv or msku_up == fnsku_inv:
+            return info["msku"]
+
+    # 4) دور بالـ z_map ثم ASIN/FNSKU
+    if real_msku:
+        real_up = real_msku.upper()
+        for inv_msku_up, info in inv_map.items():
+            asin_inv  = info.get("asin",  "").strip().upper()
+            fnsku_inv = info.get("fnsku", "").strip().upper()
+            if real_up == asin_inv or real_up == fnsku_inv:
+                return info["msku"]
+
     return msku.strip()
 
 def get_img_for_msku(msku: str, links_map_ref: dict, fallback_img: str = "") -> str:
@@ -653,11 +676,29 @@ def show_img(img, width=75):
 
 def show_sku_info(msku: str):
     # حاول تلاقي الـ MSKU الصحيح في inv_map
-    # (لو الـ msku اللي جاي هو Z/B0.. يتحوّل للـ MSKU الحقيقي أولاً)
     real_msku = resolve_msku_for_info(msku)
     info = inv_map.get(real_msku.strip().upper())
+
     if not info:
+        # المنتج مش موجود في inv_map — جيب المبيعات من sales_monthly مباشرة
+        # جرب بالـ MSKU الأصلي وبالـ Z من links m
+        msku_up = msku.strip().upper()
+        sales = sales_monthly.get(msku_up, 0)
+
+        # لو مش لاقي، دور بالـ Z map
+        if not sales:
+            z_map = get_z_to_msku_map()
+            z_val = z_map.get(msku_up, "")
+            if z_val:
+                sales = sales_monthly.get(z_val.upper(), 0)
+
+        # عرض المعلومات المتاحة
+        st.markdown(
+            f"📈 **مبيع شهري | Monthly Sales:** **{sales}** &nbsp;|&nbsp; "
+            f"📦 **SELLABLE:** **—** &nbsp;|&nbsp; ⚠️ مش موجود في المخزون"
+        )
         return
+
     total  = info["total_stock"]
     unsell = info["unsellable"]
     sales  = info["sales"]
