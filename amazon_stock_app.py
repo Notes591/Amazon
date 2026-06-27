@@ -166,50 +166,87 @@ def get_excluded_warehouses():
 @st.cache_data(ttl=300)
 def get_links_map():
     """
-    يقرأ صفحة links m وبيرجع dict مزدوج:
-      - col A (MSKU)  → Image URL (col C)
-      - col B (Z/ASIN) → Image URL (col C)
-    الشيت: A=MSKU | B=Z (أمازون ASIN/B0...) | C=Image URL
+    يقرأ صفحة links m — الشيت: A=MSKU | B=Z (B0..) | C=Image URL
+    يرجع dict: MSKU.upper() → img  و  Z.upper() → img
     """
     data = links_ws.get_all_values()
     m = {}
     for row in data[1:]:
-        # نضمن إن الصف فيه على الأقل 3 أعمدة
         while len(row) < 3:
             row.append("")
-        msku_a = row[0].strip()   # عمود A — MSKU العادي
-        z_b    = row[1].strip()   # عمود B — Z (B0... أو أي معرّف ثاني)
-        img_c  = row[2].strip()   # عمود C — Image URL
-
+        msku_a = row[0].strip()
+        z_b    = row[1].strip()
+        img_c  = row[2].strip()
         if not img_c:
-            continue  # مفيش صورة — مش مفيد
+            continue
         if msku_a:
             m[msku_a.upper()] = img_c
         if z_b and z_b.upper() not in ("#N/A", "N/A", ""):
             m[z_b.upper()] = img_c
     return m
 
+@st.cache_data(ttl=300)
+def get_z_to_msku_map():
+    """
+    يبني map من Z (عمود B) → MSKU (عمود A) من صفحة links m.
+    بيُستخدم عشان نحوّل B0... → MSKU الحقيقي ونجيب بياناته من inv_map.
+    """
+    data = links_ws.get_all_values()
+    z_map = {}
+    for row in data[1:]:
+        while len(row) < 2:
+            row.append("")
+        msku_a = row[0].strip()
+        z_b    = row[1].strip()
+        if msku_a and z_b and z_b.upper() not in ("#N/A", "N/A", ""):
+            z_map[z_b.upper()] = msku_a
+    return z_map
+
+def resolve_msku_for_info(msku: str) -> str:
+    """
+    يحاول يجيب الـ MSKU الصحيح الموجود في inv_map:
+    1) لو موجود مباشرة → يرجعه
+    2) لو مش موجود، يدور بـ z_to_msku_map (Z → MSKU)
+    3) لو مش لاقي → يرجع الأصلي
+    """
+    if not msku:
+        return msku
+    msku_up = msku.strip().upper()
+    if msku_up in inv_map:
+        return msku.strip()
+    z_map = get_z_to_msku_map()
+    real_msku = z_map.get(msku_up, "")
+    if real_msku and real_msku.upper() in inv_map:
+        return real_msku
+    return msku.strip()
+
 def get_img_for_msku(msku: str, links_map_ref: dict, fallback_img: str = "") -> str:
     """
     يجيب صورة المنتج:
-    1) يبحث بالـ MSKU (عمود A) في links_map
-    2) يبحث بالـ Z/ASIN (عمود B) اللي محفوظ في inv_map لنفس الـ MSKU
-    3) لو مش لاقي يرجع fallback_img
+    1) يبحث بالـ MSKU في links_map (يلاقيه من عمود A أو B)
+    2) يبحث بالـ ASIN من inv_map
+    3) يدور بالـ z_map لو الـ msku هو Z
+    4) يرجع fallback_img
     """
     if not msku:
         return fallback_img
     msku_up = msku.strip().upper()
 
-    # محاولة 1: ابحث بالـ MSKU مباشرة (عمود A أو B)
     img = links_map_ref.get(msku_up, "")
     if img:
         return img
 
-    # محاولة 2: جيب الـ Z/ASIN من inv_map وابحث بيه
     info = inv_map.get(msku_up, {}) if inv_map else {}
     asin = info.get("asin", "").strip().upper()
     if asin:
         img = links_map_ref.get(asin, "")
+        if img:
+            return img
+
+    z_map = get_z_to_msku_map()
+    real = z_map.get(msku_up, "")
+    if real:
+        img = links_map_ref.get(real.upper(), "")
         if img:
             return img
 
@@ -615,7 +652,10 @@ def show_img(img, width=75):
         st.markdown("🖼️")
 
 def show_sku_info(msku: str):
-    info = inv_map.get(msku.strip().upper())
+    # حاول تلاقي الـ MSKU الصحيح في inv_map
+    # (لو الـ msku اللي جاي هو Z/B0.. يتحوّل للـ MSKU الحقيقي أولاً)
+    real_msku = resolve_msku_for_info(msku)
+    info = inv_map.get(real_msku.strip().upper())
     if not info:
         return
     total  = info["total_stock"]
@@ -658,7 +698,7 @@ def confirm_clear(key, sheet, label=""):
             st.rerun()
 
 def get_latest_schedule_info(msku):
-    msku_up = msku.strip().upper()
+    msku_up = resolve_msku_for_info(msku).strip().upper()
     candidates = []
     for sheet_key in ("AMZ_Scheduled", "AMZ_Check"):
         data = get_cached(sheets[sheet_key])
@@ -692,7 +732,7 @@ def schedule_coverage_badge(msku, days_to_stockout, delay_days):
         return (f"🔴 مجدول (ASN {sched['asn']}) بتاريخ {sched['date']} [{src_label}] — متأخر عن موعد النفاد", "#ef4444", sched)
 
 def get_unavailable_ordered_note(msku):
-    msku_up = msku.strip().upper()
+    msku_up = resolve_msku_for_info(msku).strip().upper()
     notes = []
     data_un = get_cached(unavailable_sheet)
     if len(data_un) > 1:
@@ -713,7 +753,7 @@ def get_unavailable_ordered_note(msku):
     return notes
 
 def get_recent_expired_info(msku, days_back=4):
-    msku_up = msku.strip().upper()
+    msku_up = resolve_msku_for_info(msku).strip().upper()
     data = get_cached(expired_sheet)
     if len(data) <= 1:
         return None
