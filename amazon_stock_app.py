@@ -165,22 +165,55 @@ def get_excluded_warehouses():
 # ══ links map ══
 @st.cache_data(ttl=300)
 def get_links_map():
+    """
+    يقرأ صفحة links m وبيرجع dict مزدوج:
+      - col A (MSKU)  → Image URL (col C)
+      - col B (Z/ASIN) → Image URL (col C)
+    الشيت: A=MSKU | B=Z (أمازون ASIN/B0...) | C=Image URL
+    """
     data = links_ws.get_all_values()
     m = {}
     for row in data[1:]:
-        if len(row) >= 2 and row[0].strip():
-            m[row[0].strip().upper()] = row[1].strip()
+        # نضمن إن الصف فيه على الأقل 3 أعمدة
+        while len(row) < 3:
+            row.append("")
+        msku_a = row[0].strip()   # عمود A — MSKU العادي
+        z_b    = row[1].strip()   # عمود B — Z (B0... أو أي معرّف ثاني)
+        img_c  = row[2].strip()   # عمود C — Image URL
+
+        if not img_c:
+            continue  # مفيش صورة — مش مفيد
+        if msku_a:
+            m[msku_a.upper()] = img_c
+        if z_b and z_b.upper() not in ("#N/A", "N/A", ""):
+            m[z_b.upper()] = img_c
     return m
 
 def get_img_for_msku(msku: str, links_map_ref: dict, fallback_img: str = "") -> str:
     """
-    يجيب صورة المنتج بناءً على MSKU من links_map أولاً،
-    لو مش موجود يرجع للـ fallback_img (اللي اتحفظ في الشيت).
+    يجيب صورة المنتج:
+    1) يبحث بالـ MSKU (عمود A) في links_map
+    2) يبحث بالـ Z/ASIN (عمود B) اللي محفوظ في inv_map لنفس الـ MSKU
+    3) لو مش لاقي يرجع fallback_img
     """
     if not msku:
         return fallback_img
-    img = links_map_ref.get(msku.strip().upper(), "")
-    return img if img else fallback_img
+    msku_up = msku.strip().upper()
+
+    # محاولة 1: ابحث بالـ MSKU مباشرة (عمود A أو B)
+    img = links_map_ref.get(msku_up, "")
+    if img:
+        return img
+
+    # محاولة 2: جيب الـ Z/ASIN من inv_map وابحث بيه
+    info = inv_map.get(msku_up, {}) if inv_map else {}
+    asin = info.get("asin", "").strip().upper()
+    if asin:
+        img = links_map_ref.get(asin, "")
+        if img:
+            return img
+
+    return fallback_img
 
 # ══ helpers ══
 def _to_int(v):
